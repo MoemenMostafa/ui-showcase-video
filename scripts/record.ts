@@ -15,7 +15,8 @@ import { chromium, type CDPSession, type Locator, type Page } from 'playwright-c
 /** One tour step. Exactly one action key per step; `optional: true` skips a missing target instead of failing. */
 export type Step =
   | { goto: string; waitFor?: string }
-  | { caption: string; say?: string }
+  | { caption: string; say?: string; focus?: string | null }
+  | { focus: string | null }
   | { pause: number }
   | { click: string; optional?: boolean; last?: boolean }
   | { type: string; text: string; delayMs?: number }
@@ -47,6 +48,7 @@ const POINTER = `(() => {
   css.textContent = '#demo-pointer{position:fixed;left:0;top:0;width:22px;height:22px;z-index:2147483647;pointer-events:none;transition:transform .6s cubic-bezier(.3,.7,.2,1);filter:drop-shadow(0 2px 3px rgba(0,0,0,.35))}'
     + '.demo-ripple{position:fixed;width:18px;height:18px;margin:-9px 0 0 -9px;border-radius:50%;border:3px solid rgba(20,20,20,.75);box-shadow:0 0 0 2px #fff,inset 0 0 0 2px #fff;background:rgba(255,255,255,.25);z-index:2147483646;pointer-events:none;animation:demo-ripple .9s ease-out forwards}'
     + '@keyframes demo-ripple{from{transform:scale(.5);opacity:1}to{transform:scale(3.6);opacity:0}}'
+    + '#demo-focus{position:fixed;z-index:2147483644;pointer-events:none;border:3px solid #ff6b1a;border-radius:10px;box-shadow:0 0 0 9999px rgba(15,15,15,.28),0 0 18px rgba(255,107,26,.55);transition:all .35s ease;opacity:0}'
     + '#demo-caption{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:2147483645;max-width:80vw;padding:10px 18px;border-radius:10px;background:rgba(20,20,20,.82);color:#fff;font:600 16px -apple-system,BlinkMacSystemFont,sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.3);pointer-events:none}';
   const add = () => {
     document.head.append(css);
@@ -60,12 +62,50 @@ const POINTER = `(() => {
   if (document.body) add(); else addEventListener('DOMContentLoaded', add);
   window.__demoMove = (x, y) => { sessionStorage.setItem('demo-pointer', JSON.stringify([x, y])); const p = document.getElementById('demo-pointer'); if (p) { const first = p.style.opacity === '0'; if (first) p.style.transition = 'none'; p.style.transform = 'translate(' + x + 'px,' + y + 'px)'; if (first) { void p.offsetWidth; p.style.transition = ''; } p.style.opacity = '1'; } };
   window.__demoRipple = (x, y) => { const r = document.createElement('div'); r.className = 'demo-ripple'; r.style.left = x + 'px'; r.style.top = y + 'px'; document.body.append(r); setTimeout(() => r.remove(), 1000); };
+  // Spotlight: frame the element being talked about and dim the rest; it follows the element while it moves.
+  let focusEl = null;
+  const track = () => {
+    const box = document.getElementById('demo-focus');
+    if (box && focusEl && focusEl.isConnected) {
+      const r = focusEl.getBoundingClientRect(), pad = 6;
+      box.style.left = (r.left - pad) + 'px'; box.style.top = (r.top - pad) + 'px';
+      box.style.width = (r.width + 2 * pad) + 'px'; box.style.height = (r.height + 2 * pad) + 'px';
+      box.style.opacity = '1';
+    } else if (box) box.style.opacity = '0';
+    requestAnimationFrame(track);
+  };
+  window.__demoFocus = (el) => {
+    focusEl = el;
+    let box = document.getElementById('demo-focus');
+    if (!box) { box = document.createElement('div'); box.id = 'demo-focus'; document.body.append(box); requestAnimationFrame(track); }
+  };
   window.__demoCaption = (t) => { let el = document.getElementById('demo-caption'); if (!el) { el = document.createElement('div'); el.id = 'demo-caption'; document.body.append(el); } el.textContent = t; };
 })()`;
 
-type DemoWindow = { __demoMove(x: number, y: number): void; __demoRipple(x: number, y: number): void; __demoCaption(t: string): void };
+type DemoWindow = { __demoMove(x: number, y: number): void; __demoRipple(x: number, y: number): void; __demoCaption(t: string): void; __demoFocus(el: Element | null): void };
+
+/** Smooth-scroll the element to the middle of its scroll container(s) and the window; wait for the scroll to settle. */
+async function centre(page: Page, loc: Locator): Promise<void> {
+  const moved = await loc.evaluate(el => {
+    const r = el.getBoundingClientRect();
+    const off = Math.abs(r.top + r.height / 2 - innerHeight / 2) > innerHeight * 0.15 || r.top < 0 || r.bottom > innerHeight;
+    if (off) el.scrollIntoView({ block: r.height > innerHeight * 0.8 ? 'start' : 'center', inline: 'nearest', behavior: 'smooth' });
+    return off;
+  }).catch(() => false);
+  if (moved) await pause(800);
+}
+
+async function focusOn(page: Page, selector: string | null): Promise<void> {
+  if (selector === null) { await page.evaluate(() => (window as unknown as DemoWindow).__demoFocus(null)); return; }
+  const loc = page.locator(selector).first();
+  if (!(await loc.count())) { console.error(`focus: nothing matches ${selector}; caption shown without a mark`); return; }
+  await centre(page, loc);
+  await loc.evaluate(el => (window as unknown as DemoWindow).__demoFocus(el));
+  await pause(350); // the frame's fade-in
+}
 
 async function movePointer(page: Page, loc: Locator): Promise<void> {
+  await centre(page, loc);
   const box = await loc.boundingBox();
   if (!box) return;
   const x = Math.round(box.x + box.width / 2), y = Math.round(box.y + box.height / 2);
@@ -74,6 +114,7 @@ async function movePointer(page: Page, loc: Locator): Promise<void> {
 }
 
 async function clickWithPointer(page: Page, loc: Locator): Promise<void> {
+  await centre(page, loc);
   const box = await loc.boundingBox();
   if (box) {
     const x = Math.round(box.x + box.width / 2), y = Math.round(box.y + box.height / 2);
@@ -147,8 +188,12 @@ async function main(): Promise<void> {
       await page.goto(new URL(step.goto, tour.base).href);
       if (step.waitFor) await page.waitForSelector(step.waitFor, { timeout: 20_000 }).catch(() => {});
     } else if ('caption' in step) {
+      // centre and mark the area first, so the voice starts once the viewer is looking at it
+      if (step.focus !== undefined) await focusOn(page, step.focus);
       cues.push({ t: (Date.now() - t0) / 1000, caption: step.caption, say: step.say ?? step.caption });
       await page.evaluate(t => (window as unknown as DemoWindow).__demoCaption(t), step.caption);
+    } else if ('focus' in step) {
+      await focusOn(page, step.focus);
     } else if ('pause' in step) {
       await pause(step.pause);
     } else if ('click' in step) {

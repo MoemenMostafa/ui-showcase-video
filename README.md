@@ -3,7 +3,7 @@
 Record a narrated showcase video of any web UI, offline:
 
 - a **drawn pointer** that glides to each target and a **ripple** where it clicks (headless browser video has no cursor);
-- **captions** on screen;
+- **captions** on screen, and a **spotlight** on the area being talked about, scrolled to the middle of the screen;
 - a **natural spoken narration** with [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) (82M-parameter neural TTS, runs locally on CPU), or macOS `say`;
 - **subtitles** (`.srt`) and an MP4 ready to share.
 
@@ -39,7 +39,8 @@ Voices: `NARRATOR_VOICE=af_heart` (default, US), `af_bella`, `am_michael`, `bf_e
 | Step | Does |
 |---|---|
 | `{ "goto": "/#path", "waitFor": "css" }` | open a page (relative to `base`), wait for an element |
-| `{ "caption": "On screen", "say": "Spoken line" }` | show a caption and note when the narrator speaks |
+| `{ "caption": "On screen", "say": "Spoken line", "focus": "css" }` | scroll `focus` to the middle and mark it (frame + dimmed page, until the next focus), then show the caption and start the line; `"focus": null` clears the mark |
+| `{ "focus": "css" }` | move the mark without a caption |
 | `{ "pause": 5000 }` | hold, in ms — give each spoken line enough time |
 | `{ "click": "css", "last": true, "optional": true }` | glide, ripple, click; `optional` skips a missing target |
 | `{ "type": "css", "text": "…" }` | click and type visibly, key by key |
