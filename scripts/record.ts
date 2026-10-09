@@ -63,10 +63,12 @@ const POINTER = `(() => {
   window.__demoMove = (x, y) => { sessionStorage.setItem('demo-pointer', JSON.stringify([x, y])); const p = document.getElementById('demo-pointer'); if (p) { const first = p.style.opacity === '0'; if (first) p.style.transition = 'none'; p.style.transform = 'translate(' + x + 'px,' + y + 'px)'; if (first) { void p.offsetWidth; p.style.transition = ''; } p.style.opacity = '1'; } };
   window.__demoRipple = (x, y) => { const r = document.createElement('div'); r.className = 'demo-ripple'; r.style.left = x + 'px'; r.style.top = y + 'px'; document.body.append(r); setTimeout(() => r.remove(), 1000); };
   // Spotlight: frame the element being talked about and dim the rest; it follows the element while it moves.
-  let focusEl = null;
+  // by selector, looked up every frame: live pages re-render, which would orphan a remembered element
+  let focusSel = null;
   const track = () => {
     const box = document.getElementById('demo-focus');
-    if (box && focusEl && focusEl.isConnected) {
+    const focusEl = focusSel ? document.querySelector(focusSel) : null;
+    if (box && focusEl) {
       const r = focusEl.getBoundingClientRect(), pad = 6;
       box.style.left = (r.left - pad) + 'px'; box.style.top = (r.top - pad) + 'px';
       box.style.width = (r.width + 2 * pad) + 'px'; box.style.height = (r.height + 2 * pad) + 'px';
@@ -74,15 +76,15 @@ const POINTER = `(() => {
     } else if (box) box.style.opacity = '0';
     requestAnimationFrame(track);
   };
-  window.__demoFocus = (el) => {
-    focusEl = el;
+  window.__demoFocus = (sel) => {
+    focusSel = sel;
     let box = document.getElementById('demo-focus');
     if (!box) { box = document.createElement('div'); box.id = 'demo-focus'; document.body.append(box); requestAnimationFrame(track); }
   };
   window.__demoCaption = (t) => { let el = document.getElementById('demo-caption'); if (!el) { el = document.createElement('div'); el.id = 'demo-caption'; document.body.append(el); } el.textContent = t; };
 })()`;
 
-type DemoWindow = { __demoMove(x: number, y: number): void; __demoRipple(x: number, y: number): void; __demoCaption(t: string): void; __demoFocus(el: Element | null): void };
+type DemoWindow = { __demoMove(x: number, y: number): void; __demoRipple(x: number, y: number): void; __demoCaption(t: string): void; __demoFocus(selector: string | null): void };
 
 /** Smooth-scroll the element to the middle of its scroll container(s) and the window; wait for the scroll to settle. */
 async function centre(page: Page, loc: Locator): Promise<void> {
@@ -100,7 +102,7 @@ async function focusOn(page: Page, selector: string | null): Promise<void> {
   const loc = page.locator(selector).first();
   if (!(await loc.count())) { console.error(`focus: nothing matches ${selector}; caption shown without a mark`); return; }
   await centre(page, loc);
-  await loc.evaluate(el => (window as unknown as DemoWindow).__demoFocus(el));
+  await page.evaluate(sel => (window as unknown as DemoWindow).__demoFocus(sel), selector);
   await pause(350); // the frame's fade-in
 }
 
