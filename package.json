@@ -1,0 +1,16 @@
+{
+  "name": "ui-showcase-video",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Record a narrated showcase video of a web UI: pointer and click ripples, captions, offline neural narration (Kokoro), subtitles.",
+  "scripts": {
+    "record": "node scripts/record.ts",
+    "narrate": "node scripts/narrate.ts"
+  },
+  "engines": { "node": ">=22.18" },
+  "dependencies": {
+    "kokoro-js": "^1.2.1",
+    "playwright-core": "^1.63.0"
+  }
+}
