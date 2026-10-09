@@ -23,9 +23,12 @@ The Kokoro model (~90 MB) downloads from Hugging Face on first use and is cached
 
 ```bash
 node scripts/record.ts examples/runner-ui.tour.json --var runId=20261009-162346-5gui
-# → out/runner-ui.webm, out/runner-ui.cues.json, out/runner-ui-narrated.mp4 (+ .srt)
+# prints the paths it writes, next to the tour's `out` (relative to the tour file):
+#   <out>.mp4             the silent recording
+#   <out>.cues.json       when each caption appeared + its spoken line
+#   <out>-narrated.mp4    the finished video, + <out>-narrated.srt subtitles
 
-node scripts/narrate.ts out/runner-ui.webm out/runner-ui.cues.json   # re-voice only
+node scripts/narrate.ts out/runner-ui.mp4 out/runner-ui.cues.json    # re-voice only
 ```
 
 Voices: `NARRATOR_VOICE=af_heart` (default, US), `af_bella`, `am_michael`, `bf_emma` (UK), `bm_george` (UK).
@@ -41,6 +44,7 @@ Voices: `NARRATOR_VOICE=af_heart` (default, US), `af_bella`, `am_michael`, `bf_e
 | `{ "click": "css", "last": true, "optional": true }` | glide, ripple, click; `optional` skips a missing target |
 | `{ "type": "css", "text": "…" }` | click and type visibly, key by key |
 | `{ "fill": "css", "text": "" }` | set a value without showing typing |
+| `{ "hover": "css" }` | glide the pointer there without clicking (it is hidden until its first move) |
 | `{ "press": "Escape" }` | a key |
 | `{ "clickUntil": "css", "attr": ["html", "data-theme"], "equals": "dark" }` | click until an attribute has a value (cycling toggles) |
 

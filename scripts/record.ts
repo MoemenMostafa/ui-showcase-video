@@ -21,6 +21,7 @@ export type Step =
   | { type: string; text: string; delayMs?: number }
   | { fill: string; text: string }
   | { press: string }
+  | { hover: string }
   | { clickUntil: string; attr: [string, string]; equals: string | null; max?: number };
 
 export interface Tour {
@@ -52,17 +53,25 @@ const POINTER = `(() => {
     const p = document.createElement('div');
     p.id = 'demo-pointer';
     p.innerHTML = '<svg viewBox="0 0 22 22" width="22" height="22"><path d="M3 2l15 9-6.5 1.6L8 19z" fill="#fff" stroke="#111" stroke-width="1.6" stroke-linejoin="round"/></svg>';
-    const at = JSON.parse(sessionStorage.getItem('demo-pointer') || '[' + innerWidth / 2 + ',' + innerHeight / 2 + ']');
-    p.style.transform = 'translate(' + at[0] + 'px,' + at[1] + 'px)';
+    const saved = sessionStorage.getItem('demo-pointer'); // hidden until its first move, so it never sits in a random spot
+    if (saved) { const at = JSON.parse(saved); p.style.transform = 'translate(' + at[0] + 'px,' + at[1] + 'px)'; } else p.style.opacity = '0';
     document.body.append(p);
   };
   if (document.body) add(); else addEventListener('DOMContentLoaded', add);
-  window.__demoMove = (x, y) => { sessionStorage.setItem('demo-pointer', JSON.stringify([x, y])); const p = document.getElementById('demo-pointer'); if (p) p.style.transform = 'translate(' + x + 'px,' + y + 'px)'; };
+  window.__demoMove = (x, y) => { sessionStorage.setItem('demo-pointer', JSON.stringify([x, y])); const p = document.getElementById('demo-pointer'); if (p) { const first = p.style.opacity === '0'; if (first) p.style.transition = 'none'; p.style.transform = 'translate(' + x + 'px,' + y + 'px)'; if (first) { void p.offsetWidth; p.style.transition = ''; } p.style.opacity = '1'; } };
   window.__demoRipple = (x, y) => { const r = document.createElement('div'); r.className = 'demo-ripple'; r.style.left = x + 'px'; r.style.top = y + 'px'; document.body.append(r); setTimeout(() => r.remove(), 1000); };
   window.__demoCaption = (t) => { let el = document.getElementById('demo-caption'); if (!el) { el = document.createElement('div'); el.id = 'demo-caption'; document.body.append(el); } el.textContent = t; };
 })()`;
 
 type DemoWindow = { __demoMove(x: number, y: number): void; __demoRipple(x: number, y: number): void; __demoCaption(t: string): void };
+
+async function movePointer(page: Page, loc: Locator): Promise<void> {
+  const box = await loc.boundingBox();
+  if (!box) return;
+  const x = Math.round(box.x + box.width / 2), y = Math.round(box.y + box.height / 2);
+  await page.evaluate(([px, py]) => (window as unknown as DemoWindow).__demoMove(px, py), [x, y]);
+  await pause(700);
+}
 
 async function clickWithPointer(page: Page, loc: Locator): Promise<void> {
   const box = await loc.boundingBox();
@@ -151,6 +160,8 @@ async function main(): Promise<void> {
       for (const ch of step.text) { await page.keyboard.type(ch); await pause(step.delayMs ?? 110); }
     } else if ('fill' in step) {
       await page.locator(step.fill).first().fill(step.text);
+    } else if ('hover' in step) {
+      await movePointer(page, page.locator(step.hover).first());
     } else if ('press' in step) {
       await page.keyboard.press(step.press);
     } else if ('clickUntil' in step) {
