@@ -11,13 +11,14 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type CDPSession, type Locator, type Page } from 'playwright-core';
+import { mixNarration, Voice } from './narrate.ts';
 
 /** One tour step. Exactly one action key per step; `optional: true` skips a missing target instead of failing. */
 export type Step =
   | { goto: string; waitFor?: string }
   | { caption: string; say?: string; focus?: string | null }
   | { focus: string | null }
-  | { pause: number }
+  | { pause: number; hold?: boolean }
   | { click: string; optional?: boolean; last?: boolean }
   | { type: string; text: string; delayMs?: number }
   | { fill: string; text: string }
@@ -27,6 +28,9 @@ export type Step =
 
 export interface Tour {
   base: string;
+  /** speech (default): each caption holds exactly as long as its spoken line and plain pauses are skipped;
+   *  pauses: the tour's own pause steps set the timing (lines are fitted to them afterwards). */
+  timing?: 'speech' | 'pauses';
   out: string;
   viewport?: { width: number; height: number };
   colorScheme?: 'light' | 'dark';
@@ -176,6 +180,22 @@ async function main(): Promise<void> {
   const out = resolve(dirname(tourFile), tour.out);
   mkdirSync(dirname(out), { recursive: true });
 
+  // speech-timed: speak every line first, so each caption can hold exactly as long as its line
+  const speechTimed = (tour.timing ?? 'speech') === 'speech' && !args.includes('--no-narrate');
+  const lines = new Map<number, { file: string; d: number }>();
+  if (speechTimed) {
+    const voice = await Voice.load();
+    const voiceDir = `${out}.voice`;
+    mkdirSync(voiceDir, { recursive: true });
+    for (const [i, step] of tour.steps.entries()) {
+      if (!('caption' in step)) continue;
+      const file = join(voiceDir, `step${i}.${voice.ext}`);
+      lines.set(i, { file, d: await voice.speak(step.say ?? step.caption, file) });
+    }
+    const spoken = [...lines.values()].reduce((s, l) => s + l.d, 0);
+    console.error(`narration: ${lines.size} lines, ${spoken.toFixed(1)} s of speech`);
+  }
+
   const browser = await chromium.launch({ channel: process.env.DEMO_BROWSER ?? 'chrome' });
   const context = await browser.newContext({ viewport, colorScheme: tour.colorScheme ?? 'light' });
   await context.addInitScript(POINTER);
@@ -183,21 +203,23 @@ async function main(): Promise<void> {
   const cast = new Screencast();
   await cast.start(page, viewport);
   const t0 = Date.now(); // the video starts here
-  const cues: Array<{ t: number; say: string; caption: string }> = [];
+  const cues: Array<{ t: number; say: string; caption: string; file?: string; d?: number }> = [];
 
-  for (const step of tour.steps) {
+  for (const [index, step] of tour.steps.entries()) {
     if ('goto' in step) {
       await page.goto(new URL(step.goto, tour.base).href);
       if (step.waitFor) await page.waitForSelector(step.waitFor, { timeout: 20_000 }).catch(() => {});
     } else if ('caption' in step) {
       // centre and mark the area first, so the voice starts once the viewer is looking at it
       if (step.focus !== undefined) await focusOn(page, step.focus);
-      cues.push({ t: (Date.now() - t0) / 1000, caption: step.caption, say: step.say ?? step.caption });
+      const line = lines.get(index);
+      cues.push({ t: (Date.now() - t0) / 1000, caption: step.caption, say: step.say ?? step.caption, ...(line ?? {}) });
       await page.evaluate(t => (window as unknown as DemoWindow).__demoCaption(t), step.caption);
+      if (line) await pause(line.d * 1000 + 150); // hold for the spoken line plus a breath, then move straight on
     } else if ('focus' in step) {
       await focusOn(page, step.focus);
     } else if ('pause' in step) {
-      await pause(step.pause);
+      if (!speechTimed || step.hold) await pause(step.pause); // speech-timed: only deliberate holds
     } else if ('click' in step) {
       const all = page.locator(step.click);
       if (!(await all.count())) { if (step.optional) continue; throw new Error(`click: nothing matches ${step.click}`); }
@@ -229,7 +251,9 @@ async function main(): Promise<void> {
   const cuesFile = `${out}.cues.json`;
   writeFileSync(cuesFile, JSON.stringify(cues, null, 2));
   console.log(video);
-  if (!args.includes('--no-narrate')) {
+  if (speechTimed) {
+    console.log(mixNarration(video, cues.filter((c): c is typeof c & { file: string; d: number } => !!c.file)));
+  } else if (!args.includes('--no-narrate')) {
     const narrate = join(dirname(fileURLToPath(import.meta.url)), 'narrate.ts');
     console.log(execFileSync(process.execPath, [narrate, video, cuesFile], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }).trim());
   }

@@ -42,7 +42,7 @@ Voices: `NARRATOR_VOICE=af_heart` (default, US), `af_bella`, `am_michael`, `bf_e
 | `{ "goto": "/#path", "waitFor": "css" }` | open a page (relative to `base`), wait for an element |
 | `{ "caption": "On screen", "say": "Spoken line", "focus": "css" }` | scroll `focus` to the middle and mark it (frame + dimmed page, until the next focus), then show the caption and start the line; `"focus": null` clears the mark |
 | `{ "focus": "css" }` | move the mark without a caption |
-| `{ "pause": 5000 }` | hold, in ms — give each spoken line enough time |
+| `{ "pause": 5000, "hold": true }` | hold, in ms. With the default `"timing": "speech"` (captions last as long as their spoken line) plain pauses are skipped and only `hold` ones count; with `"timing": "pauses"` every pause counts |
 | `{ "click": "css", "last": true, "optional": true }` | glide, ripple, click; `optional` skips a missing target |
 | `{ "type": "css", "text": "…" }` | click and type visibly, key by key |
 | `{ "fill": "css", "text": "" }` | set a value without showing typing |
