@@ -11,7 +11,7 @@ A tour file (JSON steps) drives Chrome; a drawn pointer glides to each target an
 ## Steps
 1. **Setup once** (in this folder): `npm install`. Behind a TLS proxy prefix `NODE_EXTRA_CA_CERTS=<proxy CA.pem>` (also for the first narration: the ~90 MB model downloads then). Needs Node ≥ 22.18, ffmpeg, Google Chrome.
 2. **Write the tour** next to the user's project (`<name>.tour.json`; step reference in `README.md`, example in `examples/`). `out` is relative to the tour file. Give every caption a `focus` (CSS of the area it talks about): the recorder scrolls it to the middle — page or inner scroll box — and marks it before the line starts; `null` clears it. `focus` must be plain CSS (looked up again each frame, so live re-rendering keeps the mark; no Playwright-only `text=`). Start with a `hover` on the first thing you talk about (the pointer stays hidden until it first moves). Read-only: never click buttons that start, delete, submit or pay.
-3. **Budget time per line:** Kokoro speaks ~2.6 words/s. After each `caption` step, the steps until the next caption must last ≥ words ÷ 2.6 + 0.5 s. Total length ≈ sum of pauses + 0.8 s per click/hover + ~3 s fixed (page load, last line's tail) — check it against the requested duration *before* recording.
+3. **Budget time per line:** Kokoro speaks ~2.6 words/s (× `NARRATOR_SPEED`). After each `caption` step, the steps until the next caption must last ≥ words ÷ 2.6 + 0.5 s. Total length ≈ sum of pauses + 0.8 s per click/hover + ~3 s fixed (page load, last line's tail) — check it against the requested duration *before* recording.
 4. **Record:** `node scripts/record.ts <tour.json> [--var name=value]` → `<out>.mp4`, `<out>.cues.json`, `<out>-narrated.mp4`, `.srt`. Re-voice only: `node scripts/narrate.ts <out>.mp4 <out>.cues.json`.
 5. **Verify before handing over:**
    - narrator printed no `cue N … needs X s` warning (else shorten that line or lengthen its pause, re-run narrate);
@@ -22,6 +22,7 @@ A tour file (JSON steps) drives Chrome; a drawn pointer glides to each target an
 | Need | Do |
 |---|---|
 | Other voice | `NARRATOR_VOICE=bf_emma` (UK) / `am_michael` / `af_bella`; default `af_heart` |
+| Brisker pace | `NARRATOR_SPEED=1.15` (both engines); budget words ÷ (2.6 × speed) |
 | No Kokoro / quick draft | `NARRATOR_ENGINE=say` (macOS voices; robotic) |
 | Dynamic URL part | `"/#run/{{runId}}"` + `--var runId=…` |
 | Cycle a toggle to a state | `clickUntil` with `attr` + `equals` |

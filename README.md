@@ -32,6 +32,7 @@ node scripts/narrate.ts out/runner-ui.mp4 out/runner-ui.cues.json    # re-voice 
 ```
 
 Voices: `NARRATOR_VOICE=af_heart` (default, US), `af_bella`, `am_michael`, `bf_emma` (UK), `bm_george` (UK).
+`NARRATOR_SPEED=1.15` speeds both engines up for a brisker pace.
 `NARRATOR_ENGINE=say` uses macOS voices instead (`NARRATOR_VOICE=Samantha`, `NARRATOR_RATE=185`).
 
 ## Tour steps
