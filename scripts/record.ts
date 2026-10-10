@@ -56,6 +56,7 @@ const POINTER = `(() => {
   css.textContent = '#demo-layer{position:fixed;inset:0;width:100vw;height:100vh;max-width:none;max-height:none;margin:0;padding:0;border:0;background:transparent;color:inherit;overflow:visible;pointer-events:none}'
     + '#demo-title{position:fixed;inset:0;display:grid;place-content:center;text-align:center;z-index:2147483643;background:radial-gradient(circle at 50% 40%,#2b2f3a,#111318);color:#fff;font-family:-apple-system,BlinkMacSystemFont,sans-serif}'
     + '#demo-title b{display:block;font-size:52px;letter-spacing:-.02em}#demo-title span{display:block;margin-top:14px;font-size:22px;color:#c9ced8}'
+    + '#demo-layer:has(#demo-title) #demo-pointer{visibility:hidden}'
     + '#demo-pointer{position:fixed;left:0;top:0;width:22px;height:22px;z-index:2147483647;pointer-events:none;transition:transform .6s cubic-bezier(.3,.7,.2,1);filter:drop-shadow(0 2px 3px rgba(0,0,0,.35))}'
     + '.demo-ripple{position:fixed;width:18px;height:18px;margin:-9px 0 0 -9px;border-radius:50%;border:3px solid rgba(20,20,20,.75);box-shadow:0 0 0 2px #fff,inset 0 0 0 2px #fff;background:rgba(255,255,255,.25);z-index:2147483646;pointer-events:none;animation:demo-ripple .9s ease-out forwards}'
     + '@keyframes demo-ripple{from{transform:scale(.5);opacity:1}to{transform:scale(3.6);opacity:0}}'
@@ -77,10 +78,26 @@ const POINTER = `(() => {
     }
     requestAnimationFrame(raise);
   };
+  // Intro title still showing while the app loads: cover the page from its very first paint. The recorder puts the
+  // title in a cookie for the app's origin, which is readable synchronously here, before the document has a body.
+  let early; try { early = (document.cookie.match(/(?:^|; )demo_title=([^;]*)/) || [])[1]; } catch { /* about:blank, data: — no cookies */ }
+  if (early) {
+    const cover = document.createElement('div');
+    cover.id = 'demo-title-early';
+    cover.style.cssText = 'position:fixed;inset:0;z-index:2147483647;display:grid;place-content:center;text-align:center;color:#fff;font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:radial-gradient(circle at 50% 40%,#2b2f3a,#111318)';
+    const [title, ...sub] = decodeURIComponent(early).split(' · ');
+    const tb = document.createElement('b'); tb.textContent = title; tb.style.cssText = 'display:block;font-size:52px;letter-spacing:-.02em';
+    cover.append(tb);
+    if (sub.length) { const ts = document.createElement('span'); ts.textContent = sub.join(' · '); ts.style.cssText = 'display:block;margin-top:14px;font-size:22px;color:#c9ced8'; cover.append(ts); }
+    // init scripts run before <html> exists: attach the cover the moment it does, still before the first paint
+    const put = () => { if (!document.documentElement) return false; document.documentElement.append(cover); return true; };
+    if (!put()) { const mo = new MutationObserver(() => { if (put()) mo.disconnect(); }); mo.observe(document, { childList: true }); }
+  }
   const add = () => {
     document.head.append(css);
     layer();
     requestAnimationFrame(raise);
+    if (early) { window.__demoTitle(decodeURIComponent(early)); document.getElementById('demo-title-early')?.remove(); }
     window.__demoTitleText?.().then((t) => t && window.__demoTitle(t)); // intro title still showing: keep covering the loading page
     const p = document.createElement('div');
     p.id = 'demo-pointer';
@@ -268,11 +285,17 @@ async function main(): Promise<void> {
     } else if ('caption' in step) {
       const line = lines.get(index);
       const titleCard = !/^https?:/.test(page.url()); // before the first goto: a title card, spoken while the app loads
-      if (titleCard) { titleText = step.caption; await page.setContent(TITLE_CARD(step.caption)); }
+      if (titleCard) {
+        titleText = step.caption;
+        await context.addCookies([{ name: 'demo_title', value: encodeURIComponent(step.caption), url: tour.base }]);
+        await page.setContent(TITLE_CARD(step.caption));
+      }
       else {
         if (titleText) { // the intro card stays until its line is over, then the (already loaded) app appears
           if (flow) await pause(voiceFree - Date.now());
-          titleText = null; await page.evaluate(() => (window as unknown as DemoWindow).__demoTitle(null));
+          titleText = null;
+          await context.clearCookies({ name: 'demo_title' });
+          await page.evaluate(() => { document.getElementById('demo-title-early')?.remove(); (window as unknown as DemoWindow).__demoTitle(null); });
         }
         // centre and mark the area first, so the voice starts once the viewer is looking at it
         // (flow: while the previous line ends, like a presenter pointing at what comes next)
