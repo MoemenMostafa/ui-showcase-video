@@ -39,9 +39,10 @@ Voices: `NARRATOR_VOICE=af_heart` (default, US), `af_bella`, `am_michael`, `bf_e
 
 | Step | Does |
 |---|---|
-| `{ "goto": "/#path", "waitFor": "css" }` | open a page (relative to `base`), wait for an element |
+| `{ "goto": "/#path", "waitFor": "css" }` | open a page, wait for an element. The URL is `new URL(goto, base)`, so keep `base` a bare host (`https://host`) and put any path in `goto` |
 | `{ "caption": "On screen", "say": "Spoken line", "focus": "css" }` | scroll `focus` to the middle and mark it (frame + dimmed page, until the next focus), then show the caption and start the line; `"focus": null` clears the mark |
 | `{ "focus": "css" }` | move the mark without a caption |
+| `{ "waitForVoice": true }` or `{ "waitForVoice": 1500 }` | `"timing": "flow"` only: hold the next steps until the current line ends, or that many ms before it ends (e.g. before a click that would change what the line describes) |
 | `{ "pause": 5000, "hold": true }` | hold, in ms. With the default `"timing": "speech"` (captions last as long as their spoken line) plain pauses are skipped and only `hold` ones count; with `"timing": "pauses"` every pause counts |
 | `{ "click": "css", "last": true, "optional": true }` | glide, ripple, click; `optional` skips a missing target |
 | `{ "type": "css", "text": "…" }` | click and type visibly, key by key |
@@ -51,3 +52,17 @@ Voices: `NARRATOR_VOICE=af_heart` (default, US), `af_bella`, `am_michael`, `bf_e
 | `{ "clickUntil": "css", "attr": ["html", "data-theme"], "equals": "dark" }` | click until an attribute has a value (cycling toggles) |
 
 `{{name}}` in the tour is replaced by `--var name=value`.
+
+### Timing modes (`"timing"` in the tour)
+
+- `"speech"` (default): each line is spoken, then the next steps run; captions last exactly as long as their line.
+- `"flow"`: continuous narration. A line doesn't block: the steps after it (clicks, typing, page loads) run while it is
+  spoken, and the next caption only waits for the voice. Place each line just before the action it describes, and use
+  `waitForVoice` before a click that would change the screen too early. Check gaps with
+  `ffmpeg -i <narrated.mp4> -af silencedetect=noise=-40dB:d=0.7 -vn -f null -`.
+- `"pauses"`: hand-set `pause` steps set the timing; lines are fitted to them afterwards.
+
+**Intro card:** a caption placed before the first `goto` is shown as a full-screen title card (`"Title · subtitle"`).
+It stays over the page while the app loads, so a spoken introduction can cover the start-up time.
+
+The overlay (pointer, caption, mark, title) lives in the browser's top layer, so it also covers modal `<dialog>`s.

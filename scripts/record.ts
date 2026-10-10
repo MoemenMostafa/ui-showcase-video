@@ -24,13 +24,16 @@ export type Step =
   | { fill: string; text: string }
   | { press: string }
   | { hover: string }
+  | { waitForVoice: true | number }
   | { clickUntil: string; attr: [string, string]; equals: string | null; max?: number };
 
 export interface Tour {
   base: string;
   /** speech (default): each caption holds exactly as long as its spoken line and plain pauses are skipped;
-   *  pauses: the tour's own pause steps set the timing (lines are fitted to them afterwards). */
-  timing?: 'speech' | 'pauses';
+   *  pauses: the tour's own pause steps set the timing (lines are fitted to them afterwards).
+   *  flow: like speech, but a line doesn't block: the steps after it run while it is spoken, and the next
+   *  caption waits only for the voice to finish, so narration runs continuously over clicks, typing and loading. */
+  timing?: 'speech' | 'pauses' | 'flow';
   out: string;
   viewport?: { width: number; height: number };
   colorScheme?: 'light' | 'dark';
@@ -49,23 +52,46 @@ export function substitute(text: string, vars: Record<string, string>): string {
 
 const POINTER = `(() => {
   const css = document.createElement('style');
-  css.textContent = '#demo-pointer{position:fixed;left:0;top:0;width:22px;height:22px;z-index:2147483647;pointer-events:none;transition:transform .6s cubic-bezier(.3,.7,.2,1);filter:drop-shadow(0 2px 3px rgba(0,0,0,.35))}'
+  // Overlay lives in a manual popover: the top layer, so it also covers modal <dialog>s (no z-index can beat those)
+  css.textContent = '#demo-layer{position:fixed;inset:0;width:100vw;height:100vh;max-width:none;max-height:none;margin:0;padding:0;border:0;background:transparent;color:inherit;overflow:visible;pointer-events:none}'
+    + '#demo-title{position:fixed;inset:0;display:grid;place-content:center;text-align:center;z-index:2147483643;background:radial-gradient(circle at 50% 40%,#2b2f3a,#111318);color:#fff;font-family:-apple-system,BlinkMacSystemFont,sans-serif}'
+    + '#demo-title b{display:block;font-size:52px;letter-spacing:-.02em}#demo-title span{display:block;margin-top:14px;font-size:22px;color:#c9ced8}'
+    + '#demo-pointer{position:fixed;left:0;top:0;width:22px;height:22px;z-index:2147483647;pointer-events:none;transition:transform .6s cubic-bezier(.3,.7,.2,1);filter:drop-shadow(0 2px 3px rgba(0,0,0,.35))}'
     + '.demo-ripple{position:fixed;width:18px;height:18px;margin:-9px 0 0 -9px;border-radius:50%;border:3px solid rgba(20,20,20,.75);box-shadow:0 0 0 2px #fff,inset 0 0 0 2px #fff;background:rgba(255,255,255,.25);z-index:2147483646;pointer-events:none;animation:demo-ripple .9s ease-out forwards}'
     + '@keyframes demo-ripple{from{transform:scale(.5);opacity:1}to{transform:scale(3.6);opacity:0}}'
     + '#demo-focus{position:fixed;z-index:2147483644;pointer-events:none;border:3px solid #ff6b1a;border-radius:10px;box-shadow:0 0 0 9999px rgba(15,15,15,.28),0 0 18px rgba(255,107,26,.55);transition:all .35s ease;opacity:0}'
     + '#demo-caption{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:2147483645;max-width:80vw;padding:10px 18px;border-radius:10px;background:rgba(20,20,20,.82);color:#fff;font:600 16px -apple-system,BlinkMacSystemFont,sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.3);pointer-events:none}';
+  const layer = () => {
+    let l = document.getElementById('demo-layer');
+    if (!l) { l = document.createElement('div'); l.id = 'demo-layer'; l.setAttribute('popover', 'manual'); document.body.append(l); l.showPopover?.(); }
+    return l;
+  };
+  // A dialog or popover opened later stacks above ours; re-show ours whenever that set changes to stay on top
+  let topKey = '';
+  const raise = () => {
+    const l = document.getElementById('demo-layer');
+    if (l && l.showPopover) {
+      const open = [...document.querySelectorAll('dialog:modal, [popover]:popover-open')].filter((e) => e !== l);
+      const key = open.map((e) => e.id || e.tagName).join('|') + '#' + open.length;
+      if (key !== topKey) { topKey = key; if (l.matches(':popover-open')) l.hidePopover(); l.showPopover(); }
+    }
+    requestAnimationFrame(raise);
+  };
   const add = () => {
     document.head.append(css);
+    layer();
+    requestAnimationFrame(raise);
+    window.__demoTitleText?.().then((t) => t && window.__demoTitle(t)); // intro title still showing: keep covering the loading page
     const p = document.createElement('div');
     p.id = 'demo-pointer';
     p.innerHTML = '<svg viewBox="0 0 22 22" width="22" height="22"><path d="M3 2l15 9-6.5 1.6L8 19z" fill="#fff" stroke="#111" stroke-width="1.6" stroke-linejoin="round"/></svg>';
     const saved = sessionStorage.getItem('demo-pointer'); // hidden until its first move, so it never sits in a random spot
     if (saved) { const at = JSON.parse(saved); p.style.transform = 'translate(' + at[0] + 'px,' + at[1] + 'px)'; } else p.style.opacity = '0';
-    document.body.append(p);
+    layer().append(p);
   };
   if (document.body) add(); else addEventListener('DOMContentLoaded', add);
   window.__demoMove = (x, y) => { sessionStorage.setItem('demo-pointer', JSON.stringify([x, y])); const p = document.getElementById('demo-pointer'); if (p) { const first = p.style.opacity === '0'; if (first) p.style.transition = 'none'; p.style.transform = 'translate(' + x + 'px,' + y + 'px)'; if (first) { void p.offsetWidth; p.style.transition = ''; } p.style.opacity = '1'; } };
-  window.__demoRipple = (x, y) => { const r = document.createElement('div'); r.className = 'demo-ripple'; r.style.left = x + 'px'; r.style.top = y + 'px'; document.body.append(r); setTimeout(() => r.remove(), 1000); };
+  window.__demoRipple = (x, y) => { const r = document.createElement('div'); r.className = 'demo-ripple'; r.style.left = x + 'px'; r.style.top = y + 'px'; layer().append(r); setTimeout(() => r.remove(), 1000); };
   // Spotlight: frame the element being talked about and dim the rest; it follows the element while it moves.
   // by selector, looked up every frame: live pages re-render, which would orphan a remembered element
   let focusSel = null;
@@ -83,12 +109,32 @@ const POINTER = `(() => {
   window.__demoFocus = (sel) => {
     focusSel = sel;
     let box = document.getElementById('demo-focus');
-    if (!box) { box = document.createElement('div'); box.id = 'demo-focus'; document.body.append(box); requestAnimationFrame(track); }
+    if (!box) { box = document.createElement('div'); box.id = 'demo-focus'; layer().append(box); requestAnimationFrame(track); }
   };
-  window.__demoCaption = (t) => { let el = document.getElementById('demo-caption'); if (!el) { el = document.createElement('div'); el.id = 'demo-caption'; document.body.append(el); } el.textContent = t; };
+  window.__demoTitle = (t) => {
+    document.getElementById('demo-title')?.remove();
+    if (!t) return;
+    const [title, ...sub] = t.split(' · ');
+    const el = document.createElement('div'); el.id = 'demo-title';
+    const b = document.createElement('b'); b.textContent = title; el.append(b);
+    if (sub.length) { const s = document.createElement('span'); s.textContent = sub.join(' · '); el.append(s); }
+    layer().append(el);
+  };
+  window.__demoCaption = (t) => { let el = document.getElementById('demo-caption'); if (!el) { el = document.createElement('div'); el.id = 'demo-caption'; layer().append(el); } el.textContent = t; };
 })()`;
 
-type DemoWindow = { __demoMove(x: number, y: number): void; __demoRipple(x: number, y: number): void; __demoCaption(t: string): void; __demoFocus(selector: string | null): void };
+const esc = (t: string) => t.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
+// Full-screen title for a caption placed before the first goto; " · " splits it into title and subtitle
+const TITLE_CARD = (caption: string) => {
+  const [title, ...sub] = caption.split(' · ');
+  return '<!doctype html><html><body style="margin:0;height:100vh;display:grid;place-content:center;text-align:center;'
+    + 'background:radial-gradient(circle at 50% 40%,#2b2f3a,#111318);color:#fff;font-family:-apple-system,BlinkMacSystemFont,sans-serif">'
+    + `<div style="font-size:52px;font-weight:700;letter-spacing:-.02em">${esc(title)}</div>`
+    + (sub.length ? `<div style="margin-top:14px;font-size:22px;color:#c9ced8">${esc(sub.join(' · '))}</div>` : '')
+    + '</body></html>';
+};
+
+type DemoWindow = { __demoTitle(t: string | null): void; __demoMove(x: number, y: number): void; __demoRipple(x: number, y: number): void; __demoCaption(t: string): void; __demoFocus(selector: string | null): void };
 
 /** Smooth-scroll the element to the middle of its scroll container(s) and the window; wait for the scroll to settle. */
 async function centre(page: Page, loc: Locator): Promise<void> {
@@ -164,8 +210,10 @@ class Screencast {
     writeFileSync(list, lines.join('\n'));
     const w = size.width - (size.width % 2), h = size.height - (size.height % 2);
     execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', list,
-      '-vf', `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:white,fps=30,format=yuv420p`,
-      '-c:v', 'libx264', '-crf', '20', '-movflags', '+faststart', out]);
+      '-vf', `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:white,fps=30:start_time=0,tpad=stop_mode=clone:stop_duration=5,format=yuv420p`,
+      // start_time=0: else the video starts at the 2nd frame and runs ahead of the voice; concat also mishandles the
+      // last entry's duration, so pad by cloning the last frame and cut at the recorded length
+      '-t', (end - t0).toFixed(3), '-c:v', 'libx264', '-crf', '20', '-movflags', '+faststart', out]);
   }
 }
 
@@ -181,7 +229,9 @@ async function main(): Promise<void> {
   mkdirSync(dirname(out), { recursive: true });
 
   // speech-timed: speak every line first, so each caption can hold exactly as long as its line
-  const speechTimed = (tour.timing ?? 'speech') === 'speech' && !args.includes('--no-narrate');
+  const speechTimed = (tour.timing ?? 'speech') !== 'pauses' && !args.includes('--no-narrate');
+  const flow = speechTimed && tour.timing === 'flow';
+  let voiceFree = 0; // flow: when the line being spoken ends
   const lines = new Map<number, { file: string; d: number }>();
   if (speechTimed) {
     const voice = await Voice.load();
@@ -198,6 +248,8 @@ async function main(): Promise<void> {
 
   const browser = await chromium.launch({ channel: process.env.DEMO_BROWSER ?? 'chrome' });
   const context = await browser.newContext({ viewport, colorScheme: tour.colorScheme ?? 'light' });
+  let titleText: string | null = null; // the intro title card, kept over page loads until the next caption
+  await context.exposeFunction('__demoTitleText', () => titleText);
   await context.addInitScript(POINTER);
   const page = await context.newPage();
   const cast = new Screencast();
@@ -210,12 +262,27 @@ async function main(): Promise<void> {
       await page.goto(new URL(step.goto, tour.base).href);
       if (step.waitFor) await page.waitForSelector(step.waitFor, { timeout: 20_000 }).catch(() => {});
     } else if ('caption' in step) {
-      // centre and mark the area first, so the voice starts once the viewer is looking at it
-      if (step.focus !== undefined) await focusOn(page, step.focus);
       const line = lines.get(index);
+      const titleCard = !/^https?:/.test(page.url()); // before the first goto: a title card, spoken while the app loads
+      if (titleCard) { titleText = step.caption; await page.setContent(TITLE_CARD(step.caption)); }
+      else {
+        if (titleText) { // the intro card stays until its line is over, then the (already loaded) app appears
+          if (flow) await pause(voiceFree - Date.now());
+          titleText = null; await page.evaluate(() => (window as unknown as DemoWindow).__demoTitle(null));
+        }
+        // centre and mark the area first, so the voice starts once the viewer is looking at it
+        // (flow: while the previous line ends, like a presenter pointing at what comes next)
+        if (step.focus !== undefined) await focusOn(page, step.focus);
+      }
+      if (flow) await pause(voiceFree - Date.now()); // never talk over the previous line
       cues.push({ t: (Date.now() - t0) / 1000, caption: step.caption, say: step.say ?? step.caption, ...(line ?? {}) });
-      await page.evaluate(t => (window as unknown as DemoWindow).__demoCaption(t), step.caption);
-      if (line) await pause(line.d * 1000 + 150); // hold for the spoken line plus a breath, then move straight on
+      if (!titleCard) await page.evaluate(t => (window as unknown as DemoWindow).__demoCaption(t), step.caption);
+      // keep going: the next steps run under this line; the next one may start in this clip's ~0.4 s trailing silence
+      if (line && flow) voiceFree = Date.now() + line.d * 1000 - 350;
+      else if (line) await pause(line.d * 1000 + 150); // hold for the spoken line plus a breath, then move straight on
+    } else if ('waitForVoice' in step) {
+      // e.g. before a click that would change what the line describes; a number starts that many ms before it ends
+      if (flow) await pause(voiceFree - Date.now() - (typeof step.waitForVoice === 'number' ? step.waitForVoice : 0));
     } else if ('focus' in step) {
       await focusOn(page, step.focus);
     } else if ('pause' in step) {
@@ -242,6 +309,7 @@ async function main(): Promise<void> {
     }
   }
 
+  if (flow) await pause(voiceFree - Date.now() + 650); // let the last line (and its tail) finish on screen
   const end = Date.now();
   await cast.stop();
   await context.close();
