@@ -1,0 +1,70 @@
+{
+  "base": "https://demo.playwright.dev",
+  "out": "../out/todomvc",
+  "viewport": {
+    "width": 1280,
+    "height": 800
+  },
+  "steps": [
+    {
+      "goto": "/todomvc/#/",
+      "waitFor": ".new-todo"
+    },
+    {
+      "hover": ".new-todo"
+    },
+    {
+      "caption": "TodoMVC \u00b7 a small to-do app",
+      "say": "This is TodoMVC, a small to-do app.",
+      "focus": ".todoapp"
+    },
+    {
+      "type": ".new-todo",
+      "text": "Write the tour"
+    },
+    {
+      "press": "Enter"
+    },
+    {
+      "type": ".new-todo",
+      "text": "Record the video"
+    },
+    {
+      "press": "Enter"
+    },
+    {
+      "caption": "Type a task and press Enter to add it",
+      "say": "Type a task, and press Enter to add it.",
+      "focus": ".todo-list"
+    },
+    {
+      "click": ".todo-list li .toggle"
+    },
+    {
+      "caption": "Tick a task to mark it done",
+      "say": "Tick a task to mark it done.",
+      "focus": ".todo-list"
+    },
+    {
+      "caption": "The counter shows what is left",
+      "say": "The counter shows what is left.",
+      "focus": ".todo-count"
+    },
+    {
+      "click": ".filters a[href=\"#/completed\"]"
+    },
+    {
+      "caption": "Filters: all, active or completed",
+      "say": "Filters show all, active, or completed tasks.",
+      "focus": ".filters"
+    },
+    {
+      "click": ".filters a[href=\"#/\"]"
+    },
+    {
+      "caption": "One JSON file of steps \u00b7 no code",
+      "say": "That whole tour is one JSON file of steps. No code.",
+      "focus": null
+    }
+  ]
+}
