@@ -150,8 +150,12 @@ async function centre(page: Page, loc: Locator): Promise<void> {
 async function focusOn(page: Page, selector: string | null): Promise<void> {
   if (selector === null) { await page.evaluate(() => (window as unknown as DemoWindow).__demoFocus(null)); return; }
   const loc = page.locator(selector).first();
-  if (!(await loc.count())) { console.error(`focus: nothing matches ${selector}; caption shown without a mark`); return; }
-  await centre(page, loc);
+  // a click just before this (flow timing) may still be rendering the target: wait a little for it
+  await loc.waitFor({ state: 'attached', timeout: 3000 }).catch(() => {});
+  const present = (await loc.count()) > 0;
+  if (present) await centre(page, loc);
+  else console.error(`focus: nothing matches ${selector} yet; the mark appears if it renders later`);
+  // set either way: the mark looks the selector up every frame, so a late element still gets marked
   await page.evaluate(sel => (window as unknown as DemoWindow).__demoFocus(sel), selector);
   await pause(350); // the frame's fade-in
 }
