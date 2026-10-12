@@ -29,7 +29,11 @@ node scripts/record.ts examples/todomvc.tour.json
 #   <out>-narrated.mp4    the finished video, + <out>-narrated.srt subtitles
 
 node scripts/narrate.ts out/todomvc.mp4 out/todomvc.cues.json    # re-voice only
+node scripts/tighten.ts out/todomvc                               # speech timing: squeeze the action between lines
+#   <out>-tight.mp4 (+ .srt, -tight.cues.json)  lines at 1x, gaps -> TIGHT_GAP s (default 0.3), clip padding trimmed
 ```
+
+Tour option `"colorScheme": "dark"` records the app in dark mode (default light, regardless of the OS).
 
 Voices: `NARRATOR_VOICE=af_heart` (default, US), `af_bella`, `am_michael`, `bf_emma` (UK), `bm_george` (UK).
 `NARRATOR_SPEED=1.15` speeds both engines up for a brisker pace.
@@ -56,6 +60,8 @@ Voices: `NARRATOR_VOICE=af_heart` (default, US), `af_bella`, `am_michael`, `bf_e
 ### Timing modes (`"timing"` in the tour)
 
 - `"speech"` (default): each line is spoken, then the next steps run; captions last exactly as long as their line.
+  The only mode where the voice never runs ahead of or behind the screen. Put each caption after the step that reveals
+  what it describes, then run `scripts/tighten.ts` to remove the dead air between lines (on a busy machine 2–7 s).
 - `"flow"`: continuous narration. A line doesn't block: the steps after it (clicks, typing, page loads) run while it is
   spoken, and the next caption only waits for the voice. Place each line just before the action it describes, and use
   `waitForVoice` before a click that would change the screen too early. Check gaps with
