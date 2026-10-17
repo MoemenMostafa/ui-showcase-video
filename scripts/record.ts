@@ -19,7 +19,7 @@ export type Step =
   | { caption: string; say?: string; focus?: string | null }
   | { focus: string | null }
   | { pause: number; hold?: boolean }
-  | { click: string; optional?: boolean; last?: boolean }
+  | { click: string; optional?: boolean; last?: boolean; force?: boolean }
   | { type: string; text: string; delayMs?: number }
   | { fill: string; text: string }
   | { press: string }
@@ -67,6 +67,14 @@ const POINTER = `(() => {
     if (!l) { l = document.createElement('div'); l.id = 'demo-layer'; l.setAttribute('popover', 'manual'); document.body.append(l); l.showPopover?.(); }
     return l;
   };
+  // CSP-hardening: pages with a strict style-src (e.g. checkout.stripe.com) silently drop the
+  // <style> tag above, leaving the full-viewport layer WITHOUT pointer-events:none — it then
+  // swallows every click. CSSOM injection cannot be blocked by CSP, so mirror the rules there too.
+  try {
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(css.textContent);
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+  } catch { /* older engines keep the <style> fallback */ }
   // A dialog or popover opened later stacks above ours; re-show ours whenever that set changes to stay on top
   let topKey = '';
   const raise = () => {
@@ -186,7 +194,19 @@ async function movePointer(page: Page, loc: Locator): Promise<void> {
   await pause(700);
 }
 
-async function clickWithPointer(page: Page, loc: Locator): Promise<void> {
+
+/** resolve a selector in the main frame OR any child frame (Stripe's portal renders its UI in an iframe) */
+function locatorInAnyFrame(page: Page, selector: string): Locator | null {
+  for (const f of page.frames()) {
+    try {
+      const l = f.locator(selector).first();
+      if (l.count()) return l;
+    } catch { /* selector engine not valid in this frame */ }
+  }
+  return null;
+}
+
+async function clickWithPointer(page: Page, loc: Locator, force = false): Promise<void> {
   await centre(page, loc);
   const box = await loc.boundingBox();
   if (box) {
@@ -195,7 +215,9 @@ async function clickWithPointer(page: Page, loc: Locator): Promise<void> {
     await pause(700); // the pointer's glide
     await page.evaluate(([px, py]) => (window as unknown as DemoWindow).__demoRipple(px, py), [x, y]);
   }
-  await loc.click();
+  // force: Stripe's portal keeps an animation layer (__sail-layer-containers) over its content that
+  // intercepts pointer events forever; force skips Playwright's hit-target check and clicks anyway.
+  await loc.click(force ? { force: true } : undefined);
 }
 
 /**
@@ -315,16 +337,23 @@ async function main(): Promise<void> {
     } else if ('pause' in step) {
       if (!speechTimed || step.hold) await pause(step.pause); // speech-timed: only deliberate holds
     } else if ('click' in step) {
-      const all = page.locator(step.click);
+      let all: Locator = page.locator(step.click);
+      if (!(await all.count())) { const hit = locatorInAnyFrame(page, step.click); if (hit) all = hit; }
       if (!(await all.count())) { if (step.optional) continue; throw new Error(`click: nothing matches ${step.click}`); }
-      await clickWithPointer(page, step.last ? all.last() : all.first());
+      await clickWithPointer(page, step.last ? all.last() : all.first(), step.force);
     } else if ('type' in step) {
-      await clickWithPointer(page, page.locator(step.type).first());
+      let typeLoc: Locator = page.locator(step.type).first();
+      if (!(await typeLoc.count())) { const hit = locatorInAnyFrame(page, step.type); if (hit) typeLoc = hit; }
+      await clickWithPointer(page, typeLoc);
       for (const ch of step.text) { await page.keyboard.type(ch); await pause(step.delayMs ?? 110); }
     } else if ('fill' in step) {
-      await page.locator(step.fill).first().fill(step.text);
+      let fillLoc: Locator = page.locator(step.fill).first();
+      if (!(await fillLoc.count())) { const hit = locatorInAnyFrame(page, step.fill); if (hit) fillLoc = hit; }
+      await fillLoc.fill(step.text);
     } else if ('hover' in step) {
-      await movePointer(page, page.locator(step.hover).first());
+      let hoverLoc: Locator = page.locator(step.hover).first();
+      if (!(await hoverLoc.count())) { const hit = locatorInAnyFrame(page, step.hover); if (hit) hoverLoc = hit; }
+      await movePointer(page, hoverLoc);
     } else if ('press' in step) {
       await page.keyboard.press(step.press);
     } else if ('clickUntil' in step) {
