@@ -9,7 +9,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { extname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { chromium, type Page } from 'playwright-core';
-import { cameraSpeed, frameState, planCamera, type CameraOptions, type Rect, type Track } from './camera.ts';
+import { cameraSpeed, framedFocus, frameState, planCamera, type CameraOptions, type Rect, type Track } from './camera.ts';
 import type { SoundOptions } from './sound.ts';
 
 export interface FrameOptions { background: string; radius: number; padding: number; address: string; theme: 'light' | 'dark' }
@@ -47,7 +47,7 @@ export function resolvePolish(raw: Opts | undefined, cli: string | undefined, di
   const get = (k: string): Opts | undefined => (src[k] === undefined || src[k] === false ? undefined : src[k] === true ? {} : src[k]);
   const p: Polish = {};
   const cam = get('camera');
-  if (cam) p.camera = { maxZoom: cam.maxZoom ?? 1.8, padding: cam.padding ?? 40, lead: cam.lead ?? 0.15, smoothness: cam.smoothness ?? 0.7, idleZoom: cam.idleZoom ?? 1.2 };
+  if (cam) p.camera = { maxZoom: cam.maxZoom ?? 1.8, padding: cam.padding ?? 40, lead: cam.lead ?? 0.15, smoothness: cam.smoothness ?? 0.7, idleZoom: cam.idleZoom ?? 1.2, wideFocus: cam.wideFocus ?? 'height' };
   const snd = get('sound');
   if (snd) p.sound = { volume: snd.volume ?? 0, duck: snd.duck ?? 7 };
   const fr = get('frame');
@@ -309,6 +309,7 @@ export async function renderPolish(out: string): Promise<string> {
   const fr = frameState(track, n, FPS);
   const full: Rect = [0, 0, vp.width, vp.height];
   const views = p.camera ? planCamera(fr, vp.width, vp.height, p.camera, FPS) : fr.wide.map(() => full);
+  const focus = p.camera ? framedFocus(fr, vp.width, vp.height, p.camera) : fr.focus; // what the camera frames of each
   const speed = p.blur && p.camera ? cameraSpeed(views, L.w / vp.width, vp.width).map(v => v * p.blur!.strength) : [];
   // captions: drawn over the output when the camera or frame is on (in the page they would be zoomed and cropped, or
   // scaled with the page); each one shows until the next caption or page load, as in the page
@@ -323,7 +324,7 @@ export async function renderPolish(out: string): Promise<string> {
         let sum = 0;
         for (let k = Math.max(0, Math.round(c.from * FPS)); k < Math.min(n, Math.round(c.to * FPS)); k++) {
           const v = views[k], sx = L.w / (v[2] - v[0]), sy = L.h / (v[3] - v[1]), ptr = fr.pointer[k];
-          for (const r of [fr.focus[k], ptr && [ptr[0] - 4, ptr[1] - 4, ptr[0] + 24, ptr[1] + 24]]) {
+          for (const r of [focus[k], ptr && [ptr[0] - 4, ptr[1] - 4, ptr[0] + 24, ptr[1] + 24]]) {
             if (!r) continue;
             const x0 = (r[0] - v[0]) * sx, x1 = (r[2] - v[0]) * sx, y1a = (r[1] - v[1]) * sy, y1b = (r[3] - v[1]) * sy;
             sum += Math.max(0, Math.min(x1, o.x + o.w) - Math.max(x0, o.x)) * Math.max(0, Math.min(y1b, y0 + o.h) - Math.max(y1a, y0));
@@ -391,7 +392,7 @@ export async function renderPolish(out: string): Promise<string> {
   const pad = (k: number) => Array(Math.round(k * FPS)).fill(null);
   writeFileSync(`${out}.camera.json`, JSON.stringify({
     fps: FPS, size: [L.W, L.H], content: [L.x, L.y, L.w, L.h], viewport: [vp.width, vp.height], offset: T.title, camera: !!p.camera,
-    frames: [...pad(T.title), ...Array.from({ length: i }, (_, j) => Math.min(j, n - 1)).map(k => ({ v: round(views[k]), f: round(fr.focus[k]), p: round(fr.pointer[k]), w: fr.wide[k] || undefined })), ...(art.end ? pad(T.end) : [])],
+    frames: [...pad(T.title), ...Array.from({ length: i }, (_, j) => Math.min(j, n - 1)).map(k => ({ v: round(views[k]), f: round(focus[k]), p: round(fr.pointer[k]), w: fr.wide[k] || undefined })), ...(art.end ? pad(T.end) : [])],
   }));
   return file;
 }

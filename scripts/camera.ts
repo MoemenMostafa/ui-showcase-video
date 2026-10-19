@@ -33,7 +33,9 @@ export interface Track {
   events: TrackEvent[];
 }
 
-export interface CameraOptions { maxZoom: number; padding: number; lead: number; smoothness: number; idleZoom: number }
+/** wideFocus: a focus area much wider than the view's aspect is framed on its full width ("fit", often barely zoomed) or
+ *  on its height ("height"): zoomed for reading, showing the part around the pointer (or its middle). */
+export interface CameraOptions { maxZoom: number; padding: number; lead: number; smoothness: number; idleZoom: number; wideFocus: 'fit' | 'height' }
 
 /** The track resampled to one entry per video frame. */
 export interface Frames {
@@ -95,16 +97,56 @@ export function frameState(track: Track, n: number, fps: number): Frames {
   return fr;
 }
 
+/**
+ * The part of each focus area the camera frames. wideFocus "height": a focus more than 1.5× wider than the view's aspect
+ * is framed on its height (zoom up to maxZoom) and cut to the width that zoom shows, around where the pointer is while
+ * that focus lasts (else its middle); one place per focus, so the camera doesn't wander with the pointer.
+ */
+export function framedFocus(fr: Frames, W: number, H: number, o: CameraOptions): Array<Rect | null> {
+  if (o.wideFocus !== 'height') return fr.focus;
+  const out = [...fr.focus], n = out.length;
+  for (let a = 0; a < n;) {
+    let b = a + 1;
+    while (b < n && same(fr.focus[b], fr.focus[a])) b++;
+    const f = fr.focus[a];
+    if (f) {
+      const fw = f[2] - f[0], fh = f[3] - f[1], z = clamp(H / (fh + 2 * o.padding), 1, Math.max(1, o.maxZoom)), w = W / z - 2 * o.padding;
+      if (fw / fh > 1.5 * (W / H) && w < fw) {
+        // where along the focus the pointer is (as a share of its width, so it follows a scroll), median over the focus
+        const at = fr.pointer.slice(a, b).map((p, j) => { const r = fr.focus[a + j]; return p && r && p[0] >= r[0] && p[0] <= r[2] ? (p[0] - r[0]) / (r[2] - r[0]) : null; })
+          .filter((x): x is number => x !== null).sort((x, y) => x - y);
+        const u = at.length > (b - a) / 3 ? at[at.length >> 1] : 0.5;
+        for (let i = a; i < b; i++) {
+          const r = fr.focus[i]!, cx = clamp(r[0] + u * (r[2] - r[0]), r[0] + w / 2, r[2] - w / 2);
+          out[i] = [cx - w / 2, r[1], cx + w / 2, r[3]];
+        }
+      }
+    }
+    a = b;
+  }
+  return out;
+}
+
 /** The view of size `w` (and the viewport's aspect) centred on cx, cy, kept inside the page. */
 function around(cx: number, cy: number, w: number, W: number, H: number): Rect {
   w = Math.min(w, W);
   const h = (w * H) / W, x = clamp(cx - w / 2, 0, W - w), y = clamp(cy - h / 2, 0, H - h);
   return [x, y, x + w, y + h];
 }
-/** The tightest view (zoom 1…maxZoom) that shows `r`, centred on it. */
+/** The tightest view (zoom 1…maxZoom) that shows `r`, centred on it; moved flush with the page's edge when it would
+ *  otherwise leave a thin sliver (under 8% of the view) of the page beyond it. */
 function fit(r: Rect, W: number, H: number, maxZoom: number): Rect {
   const z = clamp(Math.min(W / (r[2] - r[0]), H / (r[3] - r[1])), 1, Math.max(1, maxZoom));
-  return around((r[0] + r[2]) / 2, (r[1] + r[3]) / 2, W / z, W, H);
+  const v = around((r[0] + r[2]) / 2, (r[1] + r[3]) / 2, W / z, W, H);
+  // [lo, hi) of the view on one axis of length max, [r0, r1) of what it must show: how far to move it to the edge
+  const snap = (lo: number, hi: number, max: number, r0: number, r1: number) => {
+    const size = hi - lo;
+    if (lo > 0 && lo < 0.08 * size && r1 <= size) return -lo;
+    if (hi < max && max - hi < 0.08 * size && r0 >= max - size) return max - hi;
+    return 0;
+  };
+  const dx = snap(v[0], v[2], W, r[0], r[2]), dy = snap(v[1], v[3], H, r[1], r[3]);
+  return [v[0] + dx, v[1] + dy, v[2] + dx, v[3] + dy];
 }
 const zoomOf = (v: Rect, W: number) => W / (v[2] - v[0]);
 
@@ -112,6 +154,7 @@ const zoomOf = (v: Rect, W: number) => W / (v[2] - v[0]);
 export function planCamera(fr: Frames, W: number, H: number, o: CameraOptions, fps: number): Rect[] {
   const n = fr.wide.length, full: Rect = [0, 0, W, H];
   if (!n) return [];
+  fr = { ...fr, focus: framedFocus(fr, W, H, o) };
   // need: what a shot frames (the focus with padding, and the pointer); while the page scrolls the old focus is on
   // its way out, so a shot ignores it — must: what is never cut off (the focus itself and the pointer), even then
   const need = (i: number, pad: number): Rect | null =>

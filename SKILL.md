@@ -31,7 +31,7 @@ A tour file (JSON steps) drives Chrome; a drawn pointer glides to each target an
 | Cycle a toggle to a state | `clickUntil` with `attr` + `equals` |
 | Target may be absent | `"optional": true` on `click` |
 | Area below the fold | just `focus` (or click) it — scrolled to the middle automatically |
-| Zoom in on what's talked about | `"polish": { "camera": true }` (`maxZoom` 1.8, `padding` 40, `lead` 0.15, `smoothness` 0.7, `idleZoom` 1.2; `"camera": false` on a step = full view) |
+| Zoom in on what's talked about | `"polish": { "camera": true }` (`maxZoom` 1.8, `padding` 40, `lead` 0.15, `smoothness` 0.7, `idleZoom` 1.2, `wideFocus` height; `"camera": false` on a step = full view) |
 | UI sounds under the voice | `"polish": { "sound": true }` (`volume` 0 dB, `duck` 7 dB) |
 | Browser-window look | `"polish": { "frame": true }` (`background`, `radius` 14, `padding` 56, `address` "" — never a real URL) |
 | Branded title / end card | `"polish": { "cards": { "title", "subtitle", "brand", "logo", "end" } }` (title 2.5 s, end 3 s, `animation` fade) |
