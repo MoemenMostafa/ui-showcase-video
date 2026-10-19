@@ -9,15 +9,18 @@
 // The Kokoro model (~90 MB) downloads from Hugging Face on first use and is cached in node_modules.
 // Behind a TLS-inspecting proxy set NODE_EXTRA_CA_CERTS to its CA certificate.
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export interface Cue { t: number; say: string; file?: string }
 interface Kokoro { generate(text: string, opts: { voice: string; speed: number }): Promise<{ save(path: string): Promise<void> | void }> }
+/** Edge-TTS (network, neural): the multilingual engine — Kokoro is English-first. NARRATOR_VOICE e.g. ar-EG-Salma */
+interface Edge { setMetadata(voice: string, format: string): void; toStream(text: string): import('node:stream').Readable }
 
 const run = (cmd: string, args: string[]) => execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+const rmSyncSafe = (f: string) => { try { rmSync(f); } catch { /* not there */ } };
 const duration = (file: string) => Number(run('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', file]).trim());
 
 export function srtTime(s: number): string {
@@ -31,17 +34,18 @@ async function loadKokoro(): Promise<Kokoro | undefined> {
   return mod.KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', { dtype: 'q8', device: 'cpu' });
 }
 
-/** The narrator voice: Kokoro if installed (and not NARRATOR_ENGINE=say), else macOS say. */
+/** The narrator voice: Kokoro if installed (and not NARRATOR_ENGINE=say|edge), else macOS say. NARRATOR_ENGINE=edge + NARRATOR_VOICE=<locale-Voice> speaks any language Edge-TTS covers (ar-EG-Salma, ar-SA-Hamed…). */
 export class Voice {
   readonly #kokoro: Kokoro | undefined;
+  readonly #edge: Edge | undefined;
   readonly name: string;
   readonly ext: string;
   readonly speed: number;
   readonly #rate = Number(process.env.NARRATOR_RATE ?? 185);
-  private constructor(kokoro: Kokoro | undefined) {
-    this.#kokoro = kokoro;
+  private constructor(kokoro: Kokoro | undefined, edge: Edge | undefined) {
+    this.#kokoro = kokoro; this.#edge = edge;
     this.name = process.env.NARRATOR_VOICE ?? (kokoro ? 'af_heart' : 'Samantha');
-    this.ext = kokoro ? 'wav' : 'aiff';
+    this.ext = edge ? 'mp3' : kokoro ? 'wav' : 'aiff';
     this.speed = Number(process.env.NARRATOR_SPEED ?? 1);
     if (!(this.speed >= 0.5 && this.speed <= 2)) throw new Error(`NARRATOR_SPEED must be 0.5–2, got ${process.env.NARRATOR_SPEED}`);
   }
@@ -49,10 +53,27 @@ export class Voice {
     const engine = process.env.NARRATOR_ENGINE ?? 'kokoro';
     const kokoro = engine === 'kokoro' ? await loadKokoro() : undefined;
     if (engine === 'kokoro' && !kokoro) console.error('kokoro-js is not installed (npm install in this folder); using macOS say');
-    return new Voice(kokoro);
+    let edge: Edge | undefined;
+    if (engine === 'edge') {
+      const { MsEdgeTTS, OUTPUT_FORMAT } = await import('msedge-tts');
+      const tts = new MsEdgeTTS() as unknown as { setMetadata(v: string, f: string): Promise<void>; toStream(t: string): { audioStream: import('node:stream').Readable } };
+      await tts.setMetadata(process.env.NARRATOR_VOICE ?? 'ar-EG-SalmaNeural', (OUTPUT_FORMAT as Record<string, string>).AUDIO_24KHZ_48KBITRATE_MONO_MP3 ?? 'audio-24khz-48kbitrate-mono-mp3');
+      edge = { toStream: (text: string) => tts.toStream(text).audioStream };
+    }
+    return new Voice(kokoro, edge);
   }
   /** Speak `text` into `file`; returns its length in seconds. */
   async speak(text: string, file: string, speed = this.speed): Promise<number> {
+    if (this.#edge) {
+      const stream = this.#edge.toStream(text);
+      const fs = await import('node:fs');
+      rmSyncSafe(file);
+      await new Promise<void>((ok, fail) => {
+        stream.on('data', (c: Buffer) => { if (Buffer.isBuffer(c) && c.length) fs.appendFileSync(file, c); });
+        stream.on('end', ok); stream.on('error', fail); stream.on('close', () => ok());
+      });
+      return duration(file);
+    }
     if (this.#kokoro) await (await this.#kokoro.generate(text, { voice: this.name, speed })).save(file);
     else run('say', ['-v', this.name, '-r', String(Math.round(this.#rate * speed)), '-o', file, text]);
     return duration(file);
