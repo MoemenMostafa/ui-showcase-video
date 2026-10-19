@@ -292,6 +292,13 @@ class Screencast {
       lines.push(`file '${f.file}'`, `duration ${Math.max(0.001, next - from).toFixed(3)}`);
     });
     lines.push(`file '${frames[frames.length - 1].file}'`); // concat needs the last file repeated
+    // drift: frames that arrived after a later one, and the length the old arrival-order encode would have had
+    let latest = -Infinity, late = 0, unsorted = 0;
+    this.#frames.forEach((f, i) => {
+      if (f.ts < latest) late++;
+      latest = Math.max(latest, f.ts);
+      unsorted += Math.max(0.001, (this.#frames[i + 1]?.ts ?? end) - (i === 0 ? t0 : f.ts));
+    });
     const list = join(this.dir, 'frames.txt');
     writeFileSync(list, lines.join('\n'));
     const w = size.width - (size.width % 2), h = size.height - (size.height % 2);
@@ -300,6 +307,9 @@ class Screencast {
       // start_time=0: else the video starts at the 2nd frame and runs ahead of the voice; concat also mishandles the
       // last entry's duration, so pad by cloning the last frame and cut at the recorded length
       '-t', (end - t0).toFixed(3), '-c:v', 'libx264', ...x264, '-movflags', '+faststart', out]);
+    const encoded = Number(execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', out], { encoding: 'utf8' }).trim());
+    console.error(`screencast: ${frames.length} frames, ${late} out of order; encoded ${encoded.toFixed(2)} s, wall clock ${(end - t0).toFixed(2)} s`
+      + (late ? ` (in arrival order the frames would have run ${(unsorted - (end - t0)).toFixed(2)} s behind)` : ''));
   }
 }
 
