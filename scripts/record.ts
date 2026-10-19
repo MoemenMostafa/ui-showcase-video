@@ -3,11 +3,12 @@
 //   node scripts/record.ts <tour.json> [--var name=value …] [--no-narrate]
 //   → <out>.mp4, <out>.cues.json, and (unless --no-narrate) <out>-narrated.mp4 + .srt via scripts/narrate.ts
 //   --polish camera,sound,…  turn on exactly these polish features (scripts/polish.ts), overriding the tour's "polish"
+//   --keep-frames  keep the screencast's JPEG frames (deleted after a successful run; kept, with their path printed, on failure)
 // Uses the installed Google Chrome (no browser download); DEMO_BROWSER=msedge|chromium to change.
 // Frames come from Chrome's screencast and are encoded by the system ffmpeg, so Playwright's own video
 // recorder (which needs a matching ffmpeg download) is not used.
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -263,12 +264,12 @@ async function clickWithPointer(page: Page, loc: Locator): Promise<void> {
  */
 class Screencast {
   readonly #frames: Array<{ file: string; ts: number }> = [];
-  readonly #dir = mkdtempSync(join(tmpdir(), 'screencast-'));
+  readonly dir = mkdtempSync(join(tmpdir(), 'screencast-')); // one JPEG per frame: hundreds of MB at 2× pixels
   #cdp?: CDPSession;
   async start(page: Page, size: { width: number; height: number }): Promise<void> {
     this.#cdp = await page.context().newCDPSession(page);
     this.#cdp.on('Page.screencastFrame', ({ data, metadata, sessionId }) => {
-      const file = join(this.#dir, `f${String(this.#frames.length).padStart(6, '0')}.jpg`);
+      const file = join(this.dir, `f${String(this.#frames.length).padStart(6, '0')}.jpg`);
       writeFileSync(file, Buffer.from(data, 'base64'));
       this.#frames.push({ file, ts: metadata.timestamp ?? Date.now() / 1000 });
       void this.#cdp?.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
@@ -276,6 +277,7 @@ class Screencast {
     await this.#cdp.send('Page.startScreencast', { format: 'jpeg', quality: 85, maxWidth: size.width, maxHeight: size.height, everyNthFrame: 1 });
   }
   async stop(): Promise<void> { await this.#cdp?.send('Page.stopScreencast').catch(() => {}); }
+  remove(): void { rmSync(this.dir, { recursive: true, force: true }); }
   /** Encode to a constant-rate MP4 starting at `t0` (seconds); even dimensions, as x264 requires.
    *  `x264` replaces the default quality (polish: a near-lossless intermediate, re-rendered by scripts/polish.ts). */
   encode(out: string, t0: number, end: number, size: { width: number; height: number }, x264 = ['-crf', '20']): void {
@@ -290,7 +292,7 @@ class Screencast {
       lines.push(`file '${f.file}'`, `duration ${Math.max(0.001, next - from).toFixed(3)}`);
     });
     lines.push(`file '${frames[frames.length - 1].file}'`); // concat needs the last file repeated
-    const list = join(this.#dir, 'frames.txt');
+    const list = join(this.dir, 'frames.txt');
     writeFileSync(list, lines.join('\n'));
     const w = size.width - (size.width % 2), h = size.height - (size.height % 2);
     execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', list,
@@ -304,7 +306,7 @@ class Screencast {
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const tourFile = args.find((a, i) => !a.startsWith('--') && !args[i - 1]?.startsWith('--var') && args[i - 1] !== '--polish');
-  if (!tourFile) throw new Error('usage: node scripts/record.ts <tour.json> [--var name=value …] [--polish camera,sound,…] [--no-narrate]');
+  if (!tourFile) throw new Error('usage: node scripts/record.ts <tour.json> [--var name=value …] [--polish camera,sound,…] [--no-narrate] [--keep-frames]');
   const vars: Record<string, string> = {};
   args.forEach((a, i) => { if (a === '--var') { const [k, ...v] = args[i + 1].split('='); vars[k] = v.join('='); } });
   const tour = JSON.parse(substitute(readFileSync(tourFile, 'utf8'), vars)) as Tour;
@@ -352,6 +354,7 @@ async function main(): Promise<void> {
   const first = tour.steps[0];
   if (first && 'caption' in first) await page.setContent(TITLE_CARD(first.caption, look || undefined));
   const cast = new Screencast();
+  frameDir = cast.dir;
   await cast.start(page, { width: viewport.width * dsf, height: viewport.height * dsf });
   const t0 = Date.now(); // the video starts here
   if (polish) { tracker = new Tracker(page, t0); tracker.start(); }
@@ -469,6 +472,13 @@ async function main(): Promise<void> {
     const narrate = join(dirname(fileURLToPath(import.meta.url)), 'narrate.ts');
     console.log(execFileSync(process.execPath, [narrate, video, cuesFile], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }).trim());
   }
+  if (args.includes('--keep-frames')) console.error(`screencast frames kept in ${cast.dir}`);
+  else { cast.remove(); frameDir = undefined; }
 }
 
-main().catch(e => { console.error(e instanceof Error ? e.message : e); process.exit(1); });
+let frameDir: string | undefined; // this run's screencast frames: kept on failure, to look at or re-encode
+main().catch(e => {
+  console.error(e instanceof Error ? e.message : e);
+  if (frameDir) console.error(`screencast frames kept in ${frameDir}`);
+  process.exit(1);
+});

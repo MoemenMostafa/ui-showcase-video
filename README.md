@@ -27,6 +27,8 @@ node scripts/record.ts examples/todomvc.tour.json
 #   <out>.mp4             the silent recording
 #   <out>.cues.json       when each caption appeared + its spoken line
 #   <out>-narrated.mp4    the finished video, + <out>-narrated.srt subtitles
+# the screencast's frames (a screencast-* folder in the OS temp folder) are deleted after a successful run;
+# on failure they stay and their path is printed; --keep-frames keeps them anyway
 
 node scripts/narrate.ts out/todomvc.mp4 out/todomvc.cues.json    # re-voice only
 node scripts/tighten.ts out/todomvc                               # speech timing: squeeze the action between lines
