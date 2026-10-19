@@ -17,7 +17,9 @@ export interface CardText { title: string; subtitle?: string; duration: number }
 export interface CardOptions {
   title?: CardText; end?: CardText; brand: string; background: string; color: string; logo?: string; animation: 'fade' | 'scale' | 'none';
 }
-export interface Polish { camera?: CameraOptions; sound?: SoundOptions; frame?: FrameOptions; cards?: CardOptions; blur?: { strength: number } }
+/** Captions drawn over the output (camera or frame on): text px at 1080p; auto = bottom, or top when bottom would cover the focus. */
+export interface CaptionOptions { size: number; position: 'auto' | 'bottom' | 'top' }
+export interface Polish { camera?: CameraOptions; sound?: SoundOptions; frame?: FrameOptions; cards?: CardOptions; blur?: { strength: number }; captions?: CaptionOptions }
 
 const FEATURES = ['camera', 'sound', 'frame', 'cards', 'blur'];
 const FPS = 30;
@@ -33,7 +35,10 @@ const background = (v: string | string[]) => (Array.isArray(v) ? (v.length === 1
 export function resolvePolish(raw: Opts | undefined, cli: string | undefined, dir: string, scheme: 'light' | 'dark'): Polish | null {
   let src: Opts = raw ?? {};
   const known = (k: string) => { if (!FEATURES.includes(k)) throw new Error(`polish: unknown feature "${k}" (use ${FEATURES.join(', ')})`); };
-  Object.keys(src).forEach(known);
+  // captions: options for the captions drawn over the output, not a feature of its own
+  const { captions: capOpts, ...features } = src;
+  Object.keys(features).forEach(known);
+  src = features;
   if (cli !== undefined) {
     const on = cli === 'none' ? [] : cli.split(',').map(s => s.trim()).filter(Boolean);
     on.forEach(known);
@@ -61,6 +66,10 @@ export function resolvePolish(raw: Opts | undefined, cli: string | undefined, di
   const bl = get('blur');
   if (bl) p.blur = { strength: bl.strength ?? 1 };
   if (p.blur && !p.camera) console.error('polish: blur only acts while the camera moves; it does nothing without camera');
+  if (p.camera || p.frame) {
+    const c: Opts = capOpts && capOpts !== true ? capOpts : {};
+    p.captions = { size: c.size ?? 36, position: c.position ?? 'auto' };
+  }
   return Object.keys(p).length ? p : null;
 }
 
@@ -107,10 +116,12 @@ function cardHtml(L: Layout, c: CardOptions, t: CardText, part: 'bg' | 'fg'): st
     + `text-align:center;font-family:${FONT};color:${c.color};background:${part === 'bg' ? c.background : 'transparent'}">${body}</body></html>`;
 }
 
-/** The recorder's caption box (record.ts), scaled to the output; drawn here so the camera's zoom never crops it. */
-const captionHtml = (k: number, text: string) => '<!doctype html><html style="background:transparent"><body style="margin:0">'
-  + `<div id="c" style="position:fixed;left:50%;bottom:${28 * k}px;transform:translateX(-50%);max-width:80vw;padding:${10 * k}px ${18 * k}px;border-radius:${10 * k}px;`
-  + `background:rgba(20,20,20,.82);color:#fff;font:600 ${16 * k}px ${FONT};box-shadow:0 ${6 * k}px ${24 * k}px rgba(0,0,0,.3)">${esc(text)}</div></body></html>`;
+/** The recorder's caption box (record.ts), `px` text at the output's scale `u` (1 = 1080p); drawn here so the camera's
+ *  zoom never crops it. */
+const captionHtml = (px: number, u: number, text: string) => '<!doctype html><html style="background:transparent"><body style="margin:0">'
+  + `<div id="c" style="position:fixed;left:50%;bottom:${32 * u}px;transform:translateX(-50%);max-width:84vw;width:max-content;box-sizing:border-box;text-align:center;`
+  + `padding:.42em .9em;border-radius:.5em;background:rgba(20,20,20,.84);color:#fff;font:600 ${px}px/1.25 ${FONT};`
+  + `box-shadow:0 ${6 * u}px ${24 * u}px rgba(0,0,0,.3)">${esc(text)}</div></body></html>`;
 
 const decode = (png: Buffer, fmt: 'rgb24' | 'rgba') =>
   execFileSync('ffmpeg', ['-loglevel', 'error', '-f', 'png_pipe', '-i', '-', '-f', 'rawvideo', '-pix_fmt', fmt, '-'], { input: png, maxBuffer: 1 << 30 });
@@ -144,10 +155,10 @@ async function drawArt(p: Polish, L: Layout, track: Track, captions: string[]): 
     };
     if (p.cards?.title) art.title = await card(p.cards.title);
     if (p.cards?.end) art.end = await card(p.cards.end);
-    const k = L.w / track.viewport.width;
+    const u = L.H / 1080;
     for (const text of new Set(captions)) {
-      await load(page, captionHtml(k, text), L.w, L.h);
-      const r = (await page.locator('#c').boundingBox())!, m = Math.ceil(30 * k);
+      await load(page, captionHtml(p.captions!.size * u, u, text), L.w, L.h);
+      const r = (await page.locator('#c').boundingBox())!, m = Math.ceil(30 * u);
       const x = Math.max(0, Math.floor(r.x) - m), y = Math.max(0, Math.floor(r.y) - m);
       const clip = { x, y, width: Math.min(L.w, Math.ceil(r.x + r.width) + m) - x, height: Math.min(L.h, Math.ceil(r.y + r.height) + m) - y };
       const png = await page.screenshot({ type: 'png', omitBackground: true, clip });
@@ -292,18 +303,37 @@ const probe = (file: string) => execFileSync('ffprobe', ['-v', 'error', '-select
 export async function renderPolish(out: string): Promise<string> {
   const track = JSON.parse(readFileSync(`${out}.track.json`, 'utf8')) as Track;
   const p = track.polish as Polish, vp = track.viewport, L = layout(p, vp), raw = `${out}.raw.mp4`;
+  if (p.camera && !p.captions) p.captions = { size: 36, position: 'auto' }; // a track from before caption options
   const [sw, sh] = probe(raw), n = Math.max(1, Math.round(track.duration * FPS));
 
   const fr = frameState(track, n, FPS);
   const full: Rect = [0, 0, vp.width, vp.height];
   const views = p.camera ? planCamera(fr, vp.width, vp.height, p.camera, FPS) : fr.wide.map(() => full);
   const speed = p.blur && p.camera ? cameraSpeed(views, L.w / vp.width, vp.width).map(v => v * p.blur!.strength) : [];
-  // captions: drawn over the output when the camera is on (in the page they would be zoomed and cropped); each one
-  // shows until the next caption or page load, as in the page
-  const caps = p.camera ? track.events.filter(e => e.type === 'caption' && !e.card) : [];
+  // captions: drawn over the output when the camera or frame is on (in the page they would be zoomed and cropped, or
+  // scaled with the page); each one shows until the next caption or page load, as in the page
+  const caps = p.captions ? track.events.filter(e => e.type === 'caption' && !e.card) : [];
   const ends = track.events.filter(e => e.type === 'caption' || e.type === 'goto' || e.type === 'doc').map(e => e.t);
-  const shown = caps.map(c => ({ text: c.text!, from: c.t, to: Math.min(...ends.filter(t => t > c.t), Infinity) }));
+  const shown = caps.map(c => ({ text: c.text!, from: c.t, to: Math.min(...ends.filter(t => t > c.t), Infinity), top: p.captions!.position === 'top' }));
   const art = await drawArt(p, L, track, shown.map(c => c.text));
+  if (p.captions?.position === 'auto') {
+    // bottom, unless the box there would cover the focus or pointer (as seen through the camera) more than at the top
+    for (const c of shown) {
+      const o = art.captions.get(c.text)!, covered = (y0: number) => {
+        let sum = 0;
+        for (let k = Math.max(0, Math.round(c.from * FPS)); k < Math.min(n, Math.round(c.to * FPS)); k++) {
+          const v = views[k], sx = L.w / (v[2] - v[0]), sy = L.h / (v[3] - v[1]), ptr = fr.pointer[k];
+          for (const r of [fr.focus[k], ptr && [ptr[0] - 4, ptr[1] - 4, ptr[0] + 24, ptr[1] + 24]]) {
+            if (!r) continue;
+            const x0 = (r[0] - v[0]) * sx, x1 = (r[2] - v[0]) * sx, y1a = (r[1] - v[1]) * sy, y1b = (r[3] - v[1]) * sy;
+            sum += Math.max(0, Math.min(x1, o.x + o.w) - Math.max(x0, o.x)) * Math.max(0, Math.min(y1b, y0 + o.h) - Math.max(y1a, y0));
+          }
+        }
+        return sum;
+      };
+      c.top = covered(o.y) > 0 && covered(L.h - o.y - o.h) < covered(o.y);
+    }
+  }
 
   const file = `${out}.mp4`;
   const enc = spawn('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', `${L.W}x${L.H}`, '-r', String(FPS), '-probesize', '32', '-i', 'pipe:0',
@@ -312,9 +342,9 @@ export async function renderPolish(out: string): Promise<string> {
   const cards = p.cards!, T = cardSeconds(p);
 
   const acc = new Float32Array(L.w * L.h * 3);
-  let prev: { src: Buffer; v: Rect; cap?: string; out: Buffer } | undefined, i = 0, drawn = 0, last: Buffer | undefined;
+  let prev: { src: Buffer; v: Rect; cap?: (typeof shown)[number]; out: Buffer } | undefined, i = 0, drawn = 0, last: Buffer | undefined;
   for await (const src of frames(raw, sw, sh)) {
-    const k = Math.min(i, n - 1), v = views[k], t = i / FPS, cap = shown.find(c => t >= c.from && t < c.to)?.text;
+    const k = Math.min(i, n - 1), v = views[k], t = i / FPS, cap = shown.find(c => t >= c.from && t < c.to);
     const moving = (speed[k] ?? 0) > 2;
     let frame: Buffer;
     if (prev && !moving && cap === prev.cap && v.every((x, c) => x === prev!.v[c]) && sameFrame(src, prev.src)) frame = prev.out; // a hold: nothing changed
@@ -333,7 +363,7 @@ export async function renderPolish(out: string): Promise<string> {
         const a = art.mask ? art.mask[y * L.w + x] / 255 : 1, o = ((y + L.y) * L.W + x + L.x) * 3, q = (y * L.w + x) * 3;
         for (let c = 0; c < 3; c++) frame[o + c] = a === 1 ? acc[q + c] + 0.5 : frame[o + c] * (1 - a) + acc[q + c] * a + 0.5;
       }
-      if (cap) { const o = art.captions.get(cap)!; overlay(frame, L.W, L.H, o, L.x + o.x, L.y + o.y); }
+      if (cap) { const o = art.captions.get(cap.text)!; overlay(frame, L.W, L.H, o, L.x + o.x, L.y + (cap.top ? L.h - o.y - o.h : o.y)); }
     }
     if (frame !== prev?.out) prev = { src, v, cap, out: frame }; // compare with the frame drawn, so noise can't creep
     if (i === 0 && art.title) { // the title card, cross-fading into the first frame

@@ -396,8 +396,8 @@ async function main(): Promise<void> {
       cues.push({ t: (Date.now() - t0) / 1000, caption: step.caption, say: step.say ?? step.caption, ...(line ? { file: line.file, d: line.d } : {}) });
       // d: until the voice ends (the clip's trailing silence is free for the camera to move)
       tracker?.event({ type: 'caption', text: step.caption, d: line?.spokenTo, ...(titleCard ? { card: true } : {}) });
-      // camera: polish.ts draws the caption over the output instead, where zooming can't crop it
-      if (!titleCard && !polish?.camera) await page.evaluate(t => (window as unknown as DemoWindow).__demoCaption(t), step.caption);
+      // camera or frame: polish.ts draws the caption over the output instead, where zooming can't crop it
+      if (!titleCard && !polish?.captions) await page.evaluate(t => (window as unknown as DemoWindow).__demoCaption(t), step.caption);
       // keep going: the next steps run under this line; the next one may start in this clip's ~0.4 s trailing silence
       if (line && flow) voiceFree = Date.now() + line.d * 1000 - 350;
       else if (line) { await pause(line.d * 1000 + 150); lineDone = Date.now(); } // hold for the spoken line plus a breath, then move straight on

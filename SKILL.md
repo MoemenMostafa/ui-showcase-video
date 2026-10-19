@@ -35,6 +35,7 @@ A tour file (JSON steps) drives Chrome; a drawn pointer glides to each target an
 | UI sounds under the voice | `"polish": { "sound": true }` (`volume` 0 dB, `duck` 7 dB) |
 | Browser-window look | `"polish": { "frame": true }` (`background`, `radius` 14, `padding` 56, `address` "" — never a real URL) |
 | Branded title / end card | `"polish": { "cards": { "title", "subtitle", "brand", "logo", "end" } }` (title 2.5 s, end 3 s, `animation` fade) |
+| Caption size / place (camera or frame on) | `"polish": { "captions": { "size": 36, "position": "auto" } }` (px at 1080p; auto keeps clear of the focus) |
 | Motion blur on fast moves | `"polish": { "blur": true }` (needs camera) |
 | Polish without editing the tour | `--polish camera,sound` (exactly these; `none` = off). All options: README |
 
