@@ -347,6 +347,10 @@ async function main(): Promise<void> {
   await context.exposeFunction('__demoTitleText', () => titleText);
   await context.addInitScript(POINTER);
   const page = await context.newPage();
+  // a tour that opens on a title card: show it before the screencast starts, else the first frame is the blank white
+  // about:blank page, stretched back to t0 (a white flash, and polish's title card cross-fades into it)
+  const first = tour.steps[0];
+  if (first && 'caption' in first) await page.setContent(TITLE_CARD(first.caption, look || undefined));
   const cast = new Screencast();
   await cast.start(page, { width: viewport.width * dsf, height: viewport.height * dsf });
   const t0 = Date.now(); // the video starts here
