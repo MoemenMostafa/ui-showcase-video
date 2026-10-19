@@ -3,7 +3,8 @@
 //   node scripts/record.ts <tour.json> [--var name=value …] [--no-narrate]
 //   → <out>.mp4, <out>.cues.json, and (unless --no-narrate) <out>-narrated.mp4 + .srt via scripts/narrate.ts
 //   --polish camera,sound,…  turn on exactly these polish features (scripts/polish.ts), overriding the tour's "polish"
-//   --keep-frames  keep the screencast's JPEG frames (deleted after a successful run; kept, with their path printed, on failure)
+//   --keep-frames  keep the screencast's JPEG frames (deleted once encoded; kept, with their path printed, on failure)
+// SCREENCAST_TMPDIR (where frames go; /dev/shm for a tmpfs), SCREENCAST_QUALITY (JPEG, 85), SCREENCAST_EVERY_NTH (1)
 // Uses the installed Google Chrome (no browser download); DEMO_BROWSER=msedge|chromium to change.
 // Frames come from Chrome's screencast and are encoded by the system ffmpeg, so Playwright's own video
 // recorder (which needs a matching ffmpeg download) is not used.
@@ -25,7 +26,8 @@ export type Step = { camera?: false } & (
   | { caption: string; say?: string; focus?: string | null }
   | { focus: string | null }
   | { pause: number; hold?: boolean }
-  | { click: string; optional?: boolean; last?: boolean }
+  | { click: string; optional?: boolean; last?: boolean; force?: boolean }
+  | { clickXY: [number, number]; frame?: string }
   | { type: string; text: string; delayMs?: number }
   | { fill: string; text: string }
   | { press: string }
@@ -45,6 +47,8 @@ export interface Tour {
   colorScheme?: 'light' | 'dark';
   /** optional extras, all off unless set: camera, sound, frame, cards, blur (scripts/polish.ts, README) */
   polish?: Record<string, unknown>;
+  /** fake "you are here" for the find-my-vehicle beats — e.g. Cairo downtown */
+  geolocation?: { latitude: number; longitude: number; accuracy?: number };
   steps: Step[];
 }
 
@@ -77,6 +81,14 @@ const POINTER = `(() => {
     if (!l) { l = document.createElement('div'); l.id = 'demo-layer'; l.setAttribute('popover', 'manual'); document.body.append(l); l.showPopover?.(); }
     return l;
   };
+  // CSP-hardening: pages with a strict style-src (e.g. checkout.stripe.com) silently drop the
+  // <style> tag above, leaving the full-viewport layer WITHOUT pointer-events:none — it then
+  // swallows every click. CSSOM injection cannot be blocked by CSP, so mirror the rules there too.
+  try {
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(css.textContent);
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+  } catch { /* older engines keep the <style> fallback */ }
   // A dialog or popover opened later stacks above ours; re-show ours whenever that set changes to stay on top
   let topKey = '';
   const raise = () => {
@@ -245,7 +257,19 @@ async function movePointer(page: Page, loc: Locator): Promise<void> {
   await pause(700);
 }
 
-async function clickWithPointer(page: Page, loc: Locator): Promise<void> {
+
+/** resolve a selector in the main frame OR any child frame (Stripe's portal renders its UI in an iframe) */
+async function locatorInAnyFrame(page: Page, selector: string): Promise<Locator | null> {
+  for (const f of page.frames()) {
+    try {
+      const l = f.locator(selector).first();
+      if (await l.count()) return l; // count() is a promise: unawaited it was always truthy (the main frame won)
+    } catch { /* selector engine not valid in this frame */ }
+  }
+  return null;
+}
+
+async function clickWithPointer(page: Page, loc: Locator, force = false): Promise<void> {
   await centre(page, loc);
   const box = await loc.boundingBox();
   if (box) {
@@ -255,7 +279,19 @@ async function clickWithPointer(page: Page, loc: Locator): Promise<void> {
     await page.evaluate(([px, py]) => (window as unknown as DemoWindow).__demoRipple(px, py), [x, y]);
     tracker?.event({ type: 'click', x, y });
   }
-  await loc.click();
+  // force: Stripe's portal keeps an animation layer (__sail-layer-containers) over its content that
+  // intercepts pointer events forever; force skips Playwright's hit-target check and clicks anyway.
+  await loc.click(force ? { force: true } : undefined);
+}
+
+/** a click at raw viewport coordinates (canvas drawing: map polygons, pin drops) */
+async function clickXYWithPointer(page: Page, x: number, y: number): Promise<void> {
+  await page.evaluate(([px, py]) => (window as unknown as DemoWindow).__demoMove(px, py), [x, y]);
+  await pause(700);
+  await page.evaluate(([px, py]) => (window as unknown as DemoWindow).__demoRipple(px, py), [x, y]);
+  tracker?.event({ type: 'click', x, y }); // polish: the camera follows it and sound clicks
+  await page.mouse.click(x, y);
+  await pause(200);
 }
 
 /**
@@ -264,7 +300,10 @@ async function clickWithPointer(page: Page, loc: Locator): Promise<void> {
  */
 class Screencast {
   readonly #frames: Array<{ file: string; ts: number }> = [];
-  readonly dir = mkdtempSync(join(tmpdir(), 'screencast-')); // one JPEG per frame: hundreds of MB at 2× pixels
+  // one JPEG per frame: hundreds of MB at 2× pixels. Frames default to the OS temp dir (disk); SCREENCAST_TMPDIR=/dev/shm
+  // (a tmpfs) never stalls on disk writes under memory pressure, which otherwise backs up the CDP frame queue and OOMs
+  // the renderer (seen on a swapped-out box)
+  readonly dir = mkdtempSync(join(process.env.SCREENCAST_TMPDIR ?? tmpdir(), 'screencast-'));
   #cdp?: CDPSession;
   async start(page: Page, size: { width: number; height: number }): Promise<void> {
     this.#cdp = await page.context().newCDPSession(page);
@@ -274,7 +313,7 @@ class Screencast {
       this.#frames.push({ file, ts: metadata.timestamp ?? Date.now() / 1000 });
       void this.#cdp?.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
     });
-    await this.#cdp.send('Page.startScreencast', { format: 'jpeg', quality: 85, maxWidth: size.width, maxHeight: size.height, everyNthFrame: 1 });
+    await this.#cdp.send('Page.startScreencast', { format: 'jpeg', quality: Number(process.env.SCREENCAST_QUALITY ?? 85), maxWidth: size.width, maxHeight: size.height, everyNthFrame: Number(process.env.SCREENCAST_EVERY_NTH ?? 1) });
   }
   async stop(): Promise<void> { await this.#cdp?.send('Page.stopScreencast').catch(() => {}); }
   remove(): void { rmSync(this.dir, { recursive: true, force: true }); }
@@ -352,7 +391,13 @@ async function main(): Promise<void> {
 
   // the screencast sends CSS-px-sized frames unless the browser window itself renders at the higher scale
   const browser = await chromium.launch({ channel: process.env.DEMO_BROWSER ?? 'chrome', ...(dsf > 1 ? { args: [`--force-device-scale-factor=${dsf}`] } : {}) });
-  const context = await browser.newContext({ viewport, colorScheme: tour.colorScheme ?? 'light', ...(dsf > 1 ? { deviceScaleFactor: dsf } : {}) });
+  const context = await browser.newContext({
+    viewport, colorScheme: tour.colorScheme ?? 'light', ...(dsf > 1 ? { deviceScaleFactor: dsf } : {}),
+    ...(tour.geolocation ? {
+      geolocation: { latitude: tour.geolocation.latitude, longitude: tour.geolocation.longitude, accuracy: tour.geolocation.accuracy ?? 20 },
+      permissions: ['geolocation'],
+    } : {}),
+  });
   if (polish) await context.addInitScript('window.__demoTrackOn = true;'); // before POINTER, which reads them
   if (look) await context.addInitScript(`window.__demoLook = ${JSON.stringify(look)};`);
   let titleText: string | null = null; // the intro title card, kept over page loads until the next caption
@@ -373,6 +418,8 @@ async function main(): Promise<void> {
 
   for (const [index, step] of tour.steps.entries()) {
     const stepStart = Date.now();
+    const kind = 'goto' in step ? 'goto ' + step.goto : 'caption' in step ? 'caption' : 'click' in step ? 'click ' + step.click : 'clickXY' in step ? 'clickXY' : 'type' in step ? 'type ' + step.type : 'fill' in step ? 'fill' : 'hover' in step ? 'hover ' + step.hover : 'press' in step ? 'press ' + step.press : Object.keys(step).join('+');
+    console.error(`step ${index}: ${kind}`);
     if ('goto' in step) {
       await tracker?.take(); // the old page's last samples
       const nav = tracker?.event({ type: 'goto' });
@@ -422,18 +469,27 @@ async function main(): Promise<void> {
     } else if ('pause' in step) {
       if (!speechTimed || step.hold) await pause(step.pause); // speech-timed: only deliberate holds
     } else if ('click' in step) {
-      const all = page.locator(step.click);
+      let all: Locator = page.locator(step.click);
+      if (!(await all.count())) { const hit = await locatorInAnyFrame(page, step.click); if (hit) all = hit; }
       if (!(await all.count())) { if (step.optional) continue; throw new Error(`click: nothing matches ${step.click}`); }
-      await clickWithPointer(page, step.last ? all.last() : all.first());
+      await clickWithPointer(page, step.last ? all.last() : all.first(), step.force);
+    } else if ('clickXY' in step) {
+      await clickXYWithPointer(page, step.clickXY[0], step.clickXY[1]);
     } else if ('type' in step) {
-      await clickWithPointer(page, page.locator(step.type).first());
+      let typeLoc: Locator = page.locator(step.type).first();
+      if (!(await typeLoc.count())) { const hit = await locatorInAnyFrame(page, step.type); if (hit) typeLoc = hit; }
+      await clickWithPointer(page, typeLoc);
       const from = (Date.now() - t0) / 1000;
       for (const ch of step.text) { tracker?.event({ type: 'key' }); await page.keyboard.type(ch); await pause(step.delayMs ?? 110); }
       typing.push([from, (Date.now() - t0) / 1000]);
     } else if ('fill' in step) {
-      await page.locator(step.fill).first().fill(step.text);
+      let fillLoc: Locator = page.locator(step.fill).first();
+      if (!(await fillLoc.count())) { const hit = await locatorInAnyFrame(page, step.fill); if (hit) fillLoc = hit; }
+      await fillLoc.fill(step.text);
     } else if ('hover' in step) {
-      await movePointer(page, page.locator(step.hover).first());
+      let hoverLoc: Locator = page.locator(step.hover).first();
+      if (!(await hoverLoc.count())) { const hit = await locatorInAnyFrame(page, step.hover); if (hit) hoverLoc = hit; }
+      await movePointer(page, hoverLoc);
     } else if ('press' in step) {
       tracker?.event({ type: 'key' });
       await page.keyboard.press(step.press);
@@ -456,11 +512,16 @@ async function main(): Promise<void> {
   await browser.close();
   const video = `${out}.mp4`;
   let sfx: string | undefined;
+  const raw = `${out}.raw.mp4`;
   if (!polish || !tracker) cast.encode(video, t0 / 1000, end / 1000, viewport);
-  else {
+  else cast.encode(raw, t0 / 1000, end / 1000, { width: viewport.width * dsf, height: viewport.height * dsf }, ['-crf', '12', '-preset', 'veryfast']);
+  // encoded: the frames are no longer needed (a full /tmp tmpfs ENOSPC'd later runs; 52k stale dirs piled up over days).
+  // --keep-frames keeps them; a failure before this point keeps them too, and main().catch prints where
+  if (args.includes('--keep-frames')) console.error(`screencast frames kept in ${cast.dir}`);
+  else { cast.remove(); frameDir = undefined; }
+  if (polish && tracker) {
     // polish: a sharp intermediate + what happened when, then the camera, frame, cards and blur render <out>.mp4
-    const raw = `${out}.raw.mp4`, cards = cardSeconds(polish);
-    cast.encode(raw, t0 / 1000, end / 1000, { width: viewport.width * dsf, height: viewport.height * dsf }, ['-crf', '12', '-preset', 'veryfast']);
+    const cards = cardSeconds(polish);
     const track: Track = { viewport, dsf, duration: (end - t0) / 1000, offset: cards.title, endCard: cards.end, colorScheme: tour.colorScheme ?? 'light',
       polish, samples: tracker.samples, events: tracker.events };
     writeFileSync(`${out}.track.json`, JSON.stringify(track));
@@ -482,8 +543,6 @@ async function main(): Promise<void> {
     const narrate = join(dirname(fileURLToPath(import.meta.url)), 'narrate.ts');
     console.log(execFileSync(process.execPath, [narrate, video, cuesFile], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }).trim());
   }
-  if (args.includes('--keep-frames')) console.error(`screencast frames kept in ${cast.dir}`);
-  else { cast.remove(); frameDir = undefined; }
 }
 
 let frameDir: string | undefined; // this run's screencast frames: kept on failure, to look at or re-encode
