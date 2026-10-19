@@ -2,20 +2,26 @@
 // ripples where it clicks (headless video has no cursor), captions, and caption timings for the narrator.
 //   node scripts/record.ts <tour.json> [--var name=value …] [--no-narrate]
 //   → <out>.mp4, <out>.cues.json, and (unless --no-narrate) <out>-narrated.mp4 + .srt via scripts/narrate.ts
+//   --polish camera,sound,…  turn on exactly these polish features (scripts/polish.ts), overriding the tour's "polish"
+//   --keep-frames  keep the screencast's JPEG frames (deleted once encoded; kept, with their path printed, on failure)
+// SCREENCAST_TMPDIR (where frames go; /dev/shm for a tmpfs), SCREENCAST_QUALITY (JPEG, 85), SCREENCAST_EVERY_NTH (1)
 // Uses the installed Google Chrome (no browser download); DEMO_BROWSER=msedge|chromium to change.
 // Frames come from Chrome's screencast and are encoded by the system ffmpeg, so Playwright's own video
 // recorder (which needs a matching ffmpeg download) is not used.
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type CDPSession, type Locator, type Page } from 'playwright-core';
-import { mixNarration, Voice } from './narrate.ts';
+import type { Sample, Track, TrackEvent } from './camera.ts';
+import { mixNarration, speechSpan, Voice } from './narrate.ts';
+import { cardSeconds, renderPolish, resolvePolish, type Polish } from './polish.ts';
+import { renderSfx, sfxEvents } from './sound.ts';
 
-/** One tour step. Exactly one action key per step; `optional: true` skips a missing target instead of failing. */
-export type Step =
+/** One tour step. Exactly one action key per step; `optional: true` skips a missing target instead of failing;
+ *  `camera: false` (polish camera) shows the full view while the step runs. */
+export type Step = { camera?: false } & (
   | { goto: string; waitFor?: string }
   | { caption: string; say?: string; focus?: string | null }
   | { focus: string | null }
@@ -27,7 +33,7 @@ export type Step =
   | { press: string }
   | { hover: string }
   | { waitForVoice: true | number }
-  | { clickUntil: string; attr: [string, string]; equals: string | null; max?: number };
+  | { clickUntil: string; attr: [string, string]; equals: string | null; max?: number });
 
 export interface Tour {
   base: string;
@@ -39,6 +45,8 @@ export interface Tour {
   out: string;
   viewport?: { width: number; height: number };
   colorScheme?: 'light' | 'dark';
+  /** optional extras, all off unless set: camera, sound, frame, cards, blur (scripts/polish.ts, README) */
+  polish?: Record<string, unknown>;
   /** fake "you are here" for the find-my-vehicle beats — e.g. Cairo downtown */
   geolocation?: { latitude: number; longitude: number; accuracy?: number };
   steps: Step[];
@@ -55,10 +63,12 @@ export function substitute(text: string, vars: Record<string, string>): string {
 }
 
 const POINTER = `(() => {
+  // the intro card's colours; polish cards set them (window.__demoLook), else the default dark grey
+  const look = window.__demoLook || {}, cardBg = look.bg || 'radial-gradient(circle at 50% 40%,#2b2f3a,#111318)', cardFg = look.fg || '#fff';
   const css = document.createElement('style');
   // Overlay lives in a manual popover: the top layer, so it also covers modal <dialog>s (no z-index can beat those)
   css.textContent = '#demo-layer{position:fixed;inset:0;width:100vw;height:100vh;max-width:none;max-height:none;margin:0;padding:0;border:0;background:transparent;color:inherit;overflow:visible;pointer-events:none}'
-    + '#demo-title{position:fixed;inset:0;display:grid;place-content:center;text-align:center;z-index:2147483643;background:radial-gradient(circle at 50% 40%,#2b2f3a,#111318);color:#fff;font-family:-apple-system,BlinkMacSystemFont,sans-serif}'
+    + '#demo-title{position:fixed;inset:0;display:grid;place-content:center;text-align:center;z-index:2147483643;background:' + cardBg + ';color:' + cardFg + ';font-family:-apple-system,BlinkMacSystemFont,sans-serif}'
     + '#demo-title b{display:block;font-size:52px;letter-spacing:-.02em}#demo-title span{display:block;margin-top:14px;font-size:22px;color:#c9ced8}'
     + '#demo-layer:has(#demo-title) #demo-pointer{visibility:hidden}'
     + '#demo-pointer{position:fixed;left:0;top:0;width:22px;height:22px;z-index:2147483647;pointer-events:none;transition:transform .6s cubic-bezier(.3,.7,.2,1);filter:drop-shadow(0 2px 3px rgba(0,0,0,.35))}'
@@ -96,7 +106,7 @@ const POINTER = `(() => {
   if (early) {
     const cover = document.createElement('div');
     cover.id = 'demo-title-early';
-    cover.style.cssText = 'position:fixed;inset:0;z-index:2147483647;display:grid;place-content:center;text-align:center;color:#fff;font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:radial-gradient(circle at 50% 40%,#2b2f3a,#111318)';
+    cover.style.cssText = 'position:fixed;inset:0;z-index:2147483647;display:grid;place-content:center;text-align:center;color:' + cardFg + ';font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:' + cardBg;
     const [title, ...sub] = decodeURIComponent(early).split(' · ');
     const tb = document.createElement('b'); tb.textContent = title; tb.style.cssText = 'display:block;font-size:52px;letter-spacing:-.02em';
     cover.append(tb);
@@ -150,18 +160,66 @@ const POINTER = `(() => {
     layer().append(el);
   };
   window.__demoCaption = (t) => { let el = document.getElementById('demo-caption'); if (!el) { el = document.createElement('div'); el.id = 'demo-caption'; layer().append(el); } el.textContent = t; };
+  // Polish: sample the pointer, the focus area and the intro card every ~33 ms for the virtual camera; the recorder
+  // collects them with __demoTrackTake (window.__demoTrackOn is set only when a polish feature is on)
+  if (window.__demoTrackOn) {
+    let buf = [], last = 0;
+    const sample = () => {
+      const now = Date.now();
+      if (now - last >= 30) {
+        last = now;
+        const s = { t: now }, p = document.getElementById('demo-pointer');
+        const card = document.getElementById('demo-title') || document.getElementById('demo-title-early');
+        if (card) s.card = true;
+        else if (p && p.style.opacity !== '0') { const m = new DOMMatrixReadOnly(getComputedStyle(p).transform); s.p = [m.m41, m.m42]; }
+        const f = focusSel ? document.querySelector(focusSel) : null, r = f && f.getBoundingClientRect();
+        if (r && (r.width || r.height)) s.f = [r.left - 6, r.top - 6, r.right + 6, r.bottom + 6]; // as the mark's frame
+        buf.push(s);
+      }
+      requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+    window.__demoTrackTake = () => { const b = buf; buf = []; return { origin: performance.timeOrigin, samples: b }; };
+  }
 })()`;
 
 const esc = (t: string) => t.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
 // Full-screen title for a caption placed before the first goto; " · " splits it into title and subtitle
-const TITLE_CARD = (caption: string) => {
+const TITLE_CARD = (caption: string, look?: { bg: string; fg: string }) => {
   const [title, ...sub] = caption.split(' · ');
   return '<!doctype html><html><body style="margin:0;height:100vh;display:grid;place-content:center;text-align:center;'
-    + 'background:radial-gradient(circle at 50% 40%,#2b2f3a,#111318);color:#fff;font-family:-apple-system,BlinkMacSystemFont,sans-serif">'
+    + `background:${look?.bg ?? 'radial-gradient(circle at 50% 40%,#2b2f3a,#111318)'};color:${look?.fg ?? '#fff'};font-family:-apple-system,BlinkMacSystemFont,sans-serif">`
     + `<div style="font-size:52px;font-weight:700;letter-spacing:-.02em">${esc(title)}</div>`
     + (sub.length ? `<div style="margin-top:14px;font-size:22px;color:#c9ced8">${esc(sub.join(' · '))}</div>` : '')
     + '</body></html>';
 };
+
+/**
+ * Polish only: what happened when, for the virtual camera and the sounds (<out>.track.json). The page samples the
+ * pointer and focus every frame; this collects them every 250 ms (and before each navigation) and adds the
+ * recorder's own events: page loads, clicks, keys, lines, scrolls.
+ */
+class Tracker {
+  readonly samples: Sample[] = [];
+  readonly events: TrackEvent[] = [];
+  readonly #origins = new Set<number>();
+  #timer?: ReturnType<typeof setInterval>;
+  readonly page: Page;
+  readonly t0: number;
+  constructor(page: Page, t0: number) { this.page = page; this.t0 = t0; }
+  now(): number { return (Date.now() - this.t0) / 1000; }
+  event(e: Omit<TrackEvent, 't'> & { t?: number }): TrackEvent { const ev = { t: this.now(), ...e }; this.events.push(ev); return ev; }
+  start(): void { this.#timer = setInterval(() => void this.take(), 250); }
+  stop(): void { clearInterval(this.#timer); }
+  async take(): Promise<void> {
+    const got = await this.page.evaluate(() => (window as unknown as { __demoTrackTake?(): { origin: number; samples: Sample[] } }).__demoTrackTake?.()).catch(() => undefined);
+    if (!got) return;
+    // a new document: a page load (goto, or a link the tour clicked)
+    if (!this.#origins.has(got.origin)) { this.#origins.add(got.origin); if (got.origin > this.t0) this.event({ type: 'doc', t: (got.origin - this.t0) / 1000 }); }
+    for (const smp of got.samples) this.samples.push({ ...smp, t: (smp.t - this.t0) / 1000 });
+  }
+}
+let tracker: Tracker | undefined;
 
 type DemoWindow = { __demoTitle(t: string | null): void; __demoMove(x: number, y: number): void; __demoRipple(x: number, y: number): void; __demoCaption(t: string): void; __demoFocus(selector: string | null): void };
 
@@ -173,10 +231,11 @@ async function centre(page: Page, loc: Locator): Promise<void> {
     if (off) el.scrollIntoView({ block: r.height > innerHeight * 0.8 ? 'start' : 'center', inline: 'nearest', behavior: 'smooth' });
     return off;
   }).catch(() => false);
-  if (moved) await pause(800);
+  if (moved) { tracker?.event({ type: 'scroll', end: tracker.now() + 0.8 }); await pause(800); }
 }
 
 async function focusOn(page: Page, selector: string | null): Promise<void> {
+  tracker?.event({ type: 'focus' }); // attention moves on now (the mark follows after the scroll)
   if (selector === null) { await page.evaluate(() => (window as unknown as DemoWindow).__demoFocus(null)); return; }
   const loc = page.locator(selector).first();
   // a click just before this (flow timing) may still be rendering the target: wait a little for it
@@ -200,11 +259,11 @@ async function movePointer(page: Page, loc: Locator): Promise<void> {
 
 
 /** resolve a selector in the main frame OR any child frame (Stripe's portal renders its UI in an iframe) */
-function locatorInAnyFrame(page: Page, selector: string): Locator | null {
+async function locatorInAnyFrame(page: Page, selector: string): Promise<Locator | null> {
   for (const f of page.frames()) {
     try {
       const l = f.locator(selector).first();
-      if (l.count()) return l;
+      if (await l.count()) return l; // count() is a promise: unawaited it was always truthy (the main frame won)
     } catch { /* selector engine not valid in this frame */ }
   }
   return null;
@@ -218,6 +277,7 @@ async function clickWithPointer(page: Page, loc: Locator, force = false): Promis
     await page.evaluate(([px, py]) => (window as unknown as DemoWindow).__demoMove(px, py), [x, y]);
     await pause(700); // the pointer's glide
     await page.evaluate(([px, py]) => (window as unknown as DemoWindow).__demoRipple(px, py), [x, y]);
+    tracker?.event({ type: 'click', x, y });
   }
   // force: Stripe's portal keeps an animation layer (__sail-layer-containers) over its content that
   // intercepts pointer events forever; force skips Playwright's hit-target check and clicks anyway.
@@ -229,6 +289,7 @@ async function clickXYWithPointer(page: Page, x: number, y: number): Promise<voi
   await page.evaluate(([px, py]) => (window as unknown as DemoWindow).__demoMove(px, py), [x, y]);
   await pause(700);
   await page.evaluate(([px, py]) => (window as unknown as DemoWindow).__demoRipple(px, py), [x, y]);
+  tracker?.event({ type: 'click', x, y }); // polish: the camera follows it and sound clicks
   await page.mouse.click(x, y);
   await pause(200);
 }
@@ -239,14 +300,15 @@ async function clickXYWithPointer(page: Page, x: number, y: number): Promise<voi
  */
 class Screencast {
   readonly #frames: Array<{ file: string; ts: number }> = [];
-  // frames default to /tmp (disk); a tmpfs (e.g. /dev/shm) never stalls on disk writes under memory pressure,
-  // which otherwise backs up the CDP frame queue and OOMs the renderer (seen on a swapped-out box)
-  readonly #dir = mkdtempSync(join(process.env.SCREENCAST_TMPDIR ?? tmpdir(), 'screencast-'));
+  // one JPEG per frame: hundreds of MB at 2× pixels. Frames default to the OS temp dir (disk); SCREENCAST_TMPDIR=/dev/shm
+  // (a tmpfs) never stalls on disk writes under memory pressure, which otherwise backs up the CDP frame queue and OOMs
+  // the renderer (seen on a swapped-out box)
+  readonly dir = mkdtempSync(join(process.env.SCREENCAST_TMPDIR ?? tmpdir(), 'screencast-'));
   #cdp?: CDPSession;
   async start(page: Page, size: { width: number; height: number }): Promise<void> {
     this.#cdp = await page.context().newCDPSession(page);
     this.#cdp.on('Page.screencastFrame', ({ data, metadata, sessionId }) => {
-      const file = join(this.#dir, `f${String(this.#frames.length).padStart(6, '0')}.jpg`);
+      const file = join(this.dir, `f${String(this.#frames.length).padStart(6, '0')}.jpg`);
       writeFileSync(file, Buffer.from(data, 'base64'));
       this.#frames.push({ file, ts: metadata.timestamp ?? Date.now() / 1000 });
       void this.#cdp?.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
@@ -254,44 +316,65 @@ class Screencast {
     await this.#cdp.send('Page.startScreencast', { format: 'jpeg', quality: Number(process.env.SCREENCAST_QUALITY ?? 85), maxWidth: size.width, maxHeight: size.height, everyNthFrame: Number(process.env.SCREENCAST_EVERY_NTH ?? 1) });
   }
   async stop(): Promise<void> { await this.#cdp?.send('Page.stopScreencast').catch(() => {}); }
-  get dir(): string { return this.#dir; }
-  /** Encode to a constant-rate MP4 starting at `t0` (seconds); even dimensions, as x264 requires. */
-  encode(out: string, t0: number, end: number, size: { width: number; height: number }): void {
+  remove(): void { rmSync(this.dir, { recursive: true, force: true }); }
+  /** Encode to a constant-rate MP4 starting at `t0` (seconds); even dimensions, as x264 requires.
+   *  `x264` replaces the default quality (polish: a near-lossless intermediate, re-rendered by scripts/polish.ts). */
+  encode(out: string, t0: number, end: number, size: { width: number; height: number }, x264 = ['-crf', '20']): void {
     if (!this.#frames.length) throw new Error('screencast captured no frames');
     const lines: string[] = [];
-    this.#frames.forEach((f, i) => {
-      const next = this.#frames[i + 1]?.ts ?? end;
+    // in capture order: frames can arrive out of order, and clamping each negative gap to 1 ms made the video run
+    // seconds behind the clock (behind the captions, the camera and the voice)
+    const frames = [...this.#frames].sort((a, b) => a.ts - b.ts);
+    frames.forEach((f, i) => {
+      const next = frames[i + 1]?.ts ?? end;
       const from = i === 0 ? t0 : f.ts;
       lines.push(`file '${f.file}'`, `duration ${Math.max(0.001, next - from).toFixed(3)}`);
     });
-    lines.push(`file '${this.#frames[this.#frames.length - 1].file}'`); // concat needs the last file repeated
-    const list = join(this.#dir, 'frames.txt');
+    lines.push(`file '${frames[frames.length - 1].file}'`); // concat needs the last file repeated
+    // drift: frames that arrived after a later one, and the length the old arrival-order encode would have had
+    let latest = -Infinity, late = 0, unsorted = 0;
+    this.#frames.forEach((f, i) => {
+      if (f.ts < latest) late++;
+      latest = Math.max(latest, f.ts);
+      unsorted += Math.max(0.001, (this.#frames[i + 1]?.ts ?? end) - (i === 0 ? t0 : f.ts));
+    });
+    const list = join(this.dir, 'frames.txt');
     writeFileSync(list, lines.join('\n'));
     const w = size.width - (size.width % 2), h = size.height - (size.height % 2);
     execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', list,
       '-vf', `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:white,fps=30:start_time=0,tpad=stop_mode=clone:stop_duration=5,format=yuv420p`,
       // start_time=0: else the video starts at the 2nd frame and runs ahead of the voice; concat also mishandles the
       // last entry's duration, so pad by cloning the last frame and cut at the recorded length
-      '-t', (end - t0).toFixed(3), '-c:v', 'libx264', '-crf', '20', '-movflags', '+faststart', out]);
+      '-t', (end - t0).toFixed(3), '-c:v', 'libx264', ...x264, '-movflags', '+faststart', out]);
+    const encoded = Number(execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', out], { encoding: 'utf8' }).trim());
+    console.error(`screencast: ${frames.length} frames, ${late} out of order; encoded ${encoded.toFixed(2)} s, wall clock ${(end - t0).toFixed(2)} s`
+      + (late ? ` (in arrival order the frames would have run ${(unsorted - (end - t0)).toFixed(2)} s behind)` : ''));
   }
 }
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
-  const tourFile = args.find(a => !a.startsWith('--') && !args[args.indexOf(a) - 1]?.startsWith('--var'));
-  if (!tourFile) throw new Error('usage: node scripts/record.ts <tour.json> [--var name=value …] [--no-narrate]');
+  const tourFile = args.find((a, i) => !a.startsWith('--') && !args[i - 1]?.startsWith('--var') && args[i - 1] !== '--polish');
+  if (!tourFile) throw new Error('usage: node scripts/record.ts <tour.json> [--var name=value …] [--polish camera,sound,…] [--no-narrate] [--keep-frames]');
   const vars: Record<string, string> = {};
   args.forEach((a, i) => { if (a === '--var') { const [k, ...v] = args[i + 1].split('='); vars[k] = v.join('='); } });
   const tour = JSON.parse(substitute(readFileSync(tourFile, 'utf8'), vars)) as Tour;
   const viewport = tour.viewport ?? { width: 1440, height: 900 };
   const out = resolve(dirname(tourFile), tour.out);
   mkdirSync(dirname(out), { recursive: true });
+  const cli = args.indexOf('--polish');
+  const polish: Polish | null = resolvePolish(tour.polish, cli >= 0 ? args[cli + 1] ?? '' : undefined, dirname(resolve(tourFile)), tour.colorScheme ?? 'light');
+  // camera or window frame: capture at twice the pixels, so a zoomed or scaled-up view stays sharp
+  const dsf = polish?.camera || polish?.frame ? 2 : 1;
+  const look = polish?.cards && { bg: polish.cards.background, fg: polish.cards.color };
 
   // speech-timed: speak every line first, so each caption can hold exactly as long as its line
   const speechTimed = (tour.timing ?? 'speech') !== 'pauses' && !args.includes('--no-narrate');
   const flow = speechTimed && tour.timing === 'flow';
   let voiceFree = 0; // flow: when the line being spoken ends
-  const lines = new Map<number, { file: string; d: number }>();
+  let lineDone = 0; // speech timing: when the last line (and its breath) ended
+  // spokenTo: when the voice ends inside the clip, measured here (ffmpeg, slow on a busy machine), not while recording
+  const lines = new Map<number, { file: string; d: number; spokenTo?: number }>();
   if (speechTimed) {
     const voice = await Voice.load();
     const voiceDir = `${out}.voice`;
@@ -299,42 +382,58 @@ async function main(): Promise<void> {
     for (const [i, step] of tour.steps.entries()) {
       if (!('caption' in step)) continue;
       const file = join(voiceDir, `step${i}.${voice.ext}`);
-      lines.set(i, { file, d: await voice.speak(step.say ?? step.caption, file) });
+      const d = await voice.speak(step.say ?? step.caption, file);
+      lines.set(i, { file, d, spokenTo: speechSpan(file).to });
     }
     const spoken = [...lines.values()].reduce((s, l) => s + l.d, 0);
     console.error(`narration: ${lines.size} lines, ${spoken.toFixed(1)} s of speech`);
   }
 
-  const browser = await chromium.launch({ channel: process.env.DEMO_BROWSER ?? 'chrome' });
+  // the screencast sends CSS-px-sized frames unless the browser window itself renders at the higher scale
+  const browser = await chromium.launch({ channel: process.env.DEMO_BROWSER ?? 'chrome', ...(dsf > 1 ? { args: [`--force-device-scale-factor=${dsf}`] } : {}) });
   const context = await browser.newContext({
-    viewport, colorScheme: tour.colorScheme ?? 'light',
+    viewport, colorScheme: tour.colorScheme ?? 'light', ...(dsf > 1 ? { deviceScaleFactor: dsf } : {}),
     ...(tour.geolocation ? {
       geolocation: { latitude: tour.geolocation.latitude, longitude: tour.geolocation.longitude, accuracy: tour.geolocation.accuracy ?? 20 },
       permissions: ['geolocation'],
     } : {}),
   });
+  if (polish) await context.addInitScript('window.__demoTrackOn = true;'); // before POINTER, which reads them
+  if (look) await context.addInitScript(`window.__demoLook = ${JSON.stringify(look)};`);
   let titleText: string | null = null; // the intro title card, kept over page loads until the next caption
   await context.exposeFunction('__demoTitleText', () => titleText);
   await context.addInitScript(POINTER);
   const page = await context.newPage();
+  // a tour that opens on a title card: show it before the screencast starts, else the first frame is the blank white
+  // about:blank page, stretched back to t0 (a white flash, and polish's title card cross-fades into it)
+  const first = tour.steps[0];
+  if (first && 'caption' in first) await page.setContent(TITLE_CARD(first.caption, look || undefined));
   const cast = new Screencast();
-  await cast.start(page, viewport);
+  frameDir = cast.dir;
+  await cast.start(page, { width: viewport.width * dsf, height: viewport.height * dsf });
   const t0 = Date.now(); // the video starts here
+  if (polish) { tracker = new Tracker(page, t0); tracker.start(); }
   const cues: Array<{ t: number; say: string; caption: string; file?: string; d?: number }> = [];
+  const typing: Array<[number, number]> = []; // when each `type` step typed (s), so tighten.ts keeps it readable
 
   for (const [index, step] of tour.steps.entries()) {
+    const stepStart = Date.now();
     const kind = 'goto' in step ? 'goto ' + step.goto : 'caption' in step ? 'caption' : 'click' in step ? 'click ' + step.click : 'clickXY' in step ? 'clickXY' : 'type' in step ? 'type ' + step.type : 'fill' in step ? 'fill' : 'hover' in step ? 'hover ' + step.hover : 'press' in step ? 'press ' + step.press : Object.keys(step).join('+');
     console.error(`step ${index}: ${kind}`);
     if ('goto' in step) {
+      await tracker?.take(); // the old page's last samples
+      const nav = tracker?.event({ type: 'goto' });
       await page.goto(new URL(step.goto, tour.base).href);
       if (step.waitFor) await page.waitForSelector(step.waitFor, { timeout: 20_000 }).catch(() => {});
+      if (nav) nav.end = tracker!.now();
     } else if ('caption' in step) {
       const line = lines.get(index);
       const titleCard = !/^https?:/.test(page.url()); // before the first goto: a title card, spoken while the app loads
       if (titleCard) {
         titleText = step.caption;
         await context.addCookies([{ name: 'demo_title', value: encodeURIComponent(step.caption), url: tour.base }]);
-        await page.setContent(TITLE_CARD(step.caption));
+        await tracker?.take();
+        await page.setContent(TITLE_CARD(step.caption, look || undefined));
       }
       else {
         if (titleText) { // the intro card stays until its line is over, then the (already loaded) app appears
@@ -348,11 +447,20 @@ async function main(): Promise<void> {
         if (step.focus !== undefined) await focusOn(page, step.focus);
       }
       if (flow) await pause(voiceFree - Date.now()); // never talk over the previous line
-      cues.push({ t: (Date.now() - t0) / 1000, caption: step.caption, say: step.say ?? step.caption, ...(line ?? {}) });
-      if (!titleCard) await page.evaluate(t => (window as unknown as DemoWindow).__demoCaption(t), step.caption);
+      if (polish?.camera && !titleCard) {
+        // the camera moves only between lines: give it time to frame what this one is about before the voice starts
+        const focused = tracker!.events.filter(e => e.type === 'focus').pop();
+        const from = Math.max(flow ? voiceFree : lineDone, focused ? t0 + focused.t * 1000 : 0);
+        await pause(from + (polish.camera.lead + polish.camera.smoothness) * 1000 - Date.now());
+      }
+      cues.push({ t: (Date.now() - t0) / 1000, caption: step.caption, say: step.say ?? step.caption, ...(line ? { file: line.file, d: line.d } : {}) });
+      // d: until the voice ends (the clip's trailing silence is free for the camera to move)
+      tracker?.event({ type: 'caption', text: step.caption, d: line?.spokenTo, ...(titleCard ? { card: true } : {}) });
+      // camera or frame: polish.ts draws the caption over the output instead, where zooming can't crop it
+      if (!titleCard && !polish?.captions) await page.evaluate(t => (window as unknown as DemoWindow).__demoCaption(t), step.caption);
       // keep going: the next steps run under this line; the next one may start in this clip's ~0.4 s trailing silence
       if (line && flow) voiceFree = Date.now() + line.d * 1000 - 350;
-      else if (line) await pause(line.d * 1000 + 150); // hold for the spoken line plus a breath, then move straight on
+      else if (line) { await pause(line.d * 1000 + 150); lineDone = Date.now(); } // hold for the spoken line plus a breath, then move straight on
     } else if ('waitForVoice' in step) {
       // e.g. before a click that would change what the line describes; a number starts that many ms before it ends
       if (flow) await pause(voiceFree - Date.now() - (typeof step.waitForVoice === 'number' ? step.waitForVoice : 0));
@@ -362,25 +470,28 @@ async function main(): Promise<void> {
       if (!speechTimed || step.hold) await pause(step.pause); // speech-timed: only deliberate holds
     } else if ('click' in step) {
       let all: Locator = page.locator(step.click);
-      if (!(await all.count())) { const hit = locatorInAnyFrame(page, step.click); if (hit) all = hit; }
+      if (!(await all.count())) { const hit = await locatorInAnyFrame(page, step.click); if (hit) all = hit; }
       if (!(await all.count())) { if (step.optional) continue; throw new Error(`click: nothing matches ${step.click}`); }
       await clickWithPointer(page, step.last ? all.last() : all.first(), step.force);
     } else if ('clickXY' in step) {
       await clickXYWithPointer(page, step.clickXY[0], step.clickXY[1]);
     } else if ('type' in step) {
       let typeLoc: Locator = page.locator(step.type).first();
-      if (!(await typeLoc.count())) { const hit = locatorInAnyFrame(page, step.type); if (hit) typeLoc = hit; }
+      if (!(await typeLoc.count())) { const hit = await locatorInAnyFrame(page, step.type); if (hit) typeLoc = hit; }
       await clickWithPointer(page, typeLoc);
-      for (const ch of step.text) { await page.keyboard.type(ch); await pause(step.delayMs ?? 110); }
+      const from = (Date.now() - t0) / 1000;
+      for (const ch of step.text) { tracker?.event({ type: 'key' }); await page.keyboard.type(ch); await pause(step.delayMs ?? 110); }
+      typing.push([from, (Date.now() - t0) / 1000]);
     } else if ('fill' in step) {
       let fillLoc: Locator = page.locator(step.fill).first();
-      if (!(await fillLoc.count())) { const hit = locatorInAnyFrame(page, step.fill); if (hit) fillLoc = hit; }
+      if (!(await fillLoc.count())) { const hit = await locatorInAnyFrame(page, step.fill); if (hit) fillLoc = hit; }
       await fillLoc.fill(step.text);
     } else if ('hover' in step) {
       let hoverLoc: Locator = page.locator(step.hover).first();
-      if (!(await hoverLoc.count())) { const hit = locatorInAnyFrame(page, step.hover); if (hit) hoverLoc = hit; }
+      if (!(await hoverLoc.count())) { const hit = await locatorInAnyFrame(page, step.hover); if (hit) hoverLoc = hit; }
       await movePointer(page, hoverLoc);
     } else if ('press' in step) {
+      tracker?.event({ type: 'key' });
       await page.keyboard.press(step.press);
     } else if ('clickUntil' in step) {
       const [sel, attr] = step.attr;
@@ -389,26 +500,54 @@ async function main(): Promise<void> {
         await pause(300);
       }
     }
+    if (step.camera === false) tracker?.event({ type: 'still', t: (stepStart - t0) / 1000, end: tracker.now() });
   }
 
   if (flow) await pause(voiceFree - Date.now() + 650); // let the last line (and its tail) finish on screen
   const end = Date.now();
+  await tracker?.take();
+  tracker?.stop();
   await cast.stop();
   await context.close();
   await browser.close();
   const video = `${out}.mp4`;
-  cast.encode(video, t0 / 1000, end / 1000, viewport);
-  // frames captured: drop them (a full /tmp tmpfs ENOSPC'd later runs; 52k stale dirs piled up over days)
-  rmSync(cast.dir, { recursive: true, force: true });
+  let sfx: string | undefined;
+  const raw = `${out}.raw.mp4`;
+  if (!polish || !tracker) cast.encode(video, t0 / 1000, end / 1000, viewport);
+  else cast.encode(raw, t0 / 1000, end / 1000, { width: viewport.width * dsf, height: viewport.height * dsf }, ['-crf', '12', '-preset', 'veryfast']);
+  // encoded: the frames are no longer needed (a full /tmp tmpfs ENOSPC'd later runs; 52k stale dirs piled up over days).
+  // --keep-frames keeps them; a failure before this point keeps them too, and main().catch prints where
+  if (args.includes('--keep-frames')) console.error(`screencast frames kept in ${cast.dir}`);
+  else { cast.remove(); frameDir = undefined; }
+  if (polish && tracker) {
+    // polish: a sharp intermediate + what happened when, then the camera, frame, cards and blur render <out>.mp4
+    const cards = cardSeconds(polish);
+    const track: Track = { viewport, dsf, duration: (end - t0) / 1000, offset: cards.title, endCard: cards.end, colorScheme: tour.colorScheme ?? 'light',
+      polish, samples: tracker.samples, events: tracker.events };
+    writeFileSync(`${out}.track.json`, JSON.stringify(track));
+    await renderPolish(out);
+    for (const c of cues) c.t += cards.title; // the title card comes first
+    for (const span of typing) { span[0] += cards.title; span[1] += cards.title; }
+    if (polish.sound) {
+      const spoken = cues.filter(c => c.d !== undefined).map((c): [number, number] => [c.t, c.t + c.d!]);
+      sfx = renderSfx(sfxEvents(track), spoken, track.duration + cards.title + cards.end, `${out}.sfx.wav`, polish.sound);
+    }
+  }
   const cuesFile = `${out}.cues.json`;
   writeFileSync(cuesFile, JSON.stringify(cues, null, 2));
+  writeFileSync(`${out}.typing.json`, JSON.stringify(typing));
   console.log(video);
   if (speechTimed) {
-    console.log(mixNarration(video, cues.filter((c): c is typeof c & { file: string; d: number } => !!c.file)));
+    console.log(mixNarration(video, cues.filter((c): c is typeof c & { file: string; d: number } => !!c.file), sfx));
   } else if (!args.includes('--no-narrate')) {
     const narrate = join(dirname(fileURLToPath(import.meta.url)), 'narrate.ts');
     console.log(execFileSync(process.execPath, [narrate, video, cuesFile], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }).trim());
   }
 }
 
-main().catch(e => { console.error(e instanceof Error ? e.message : e); process.exit(1); });
+let frameDir: string | undefined; // this run's screencast frames: kept on failure, to look at or re-encode
+main().catch(e => {
+  console.error(e instanceof Error ? e.message : e);
+  if (frameDir) console.error(`screencast frames kept in ${frameDir}`);
+  process.exit(1);
+});

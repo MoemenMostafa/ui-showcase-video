@@ -3,4 +3,5 @@ out/
 *.webm
 *.mp4
 .DS_Store
+!media/*.mp4
 tours/

@@ -1,0 +1,100 @@
+{
+  "base": "http://127.0.0.1:8765",
+  "out": "../../out/acme",
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "steps": [
+    {
+      "caption": "Acme Board · polish test tour",
+      "say": "This is Acme Board, a small test app."
+    },
+    {
+      "goto": "/",
+      "waitFor": "#app"
+    },
+    {
+      "hover": "#search"
+    },
+    {
+      "caption": "Search and actions live in the header",
+      "say": "Search and actions live in the header.",
+      "focus": "header"
+    },
+    {
+      "type": "#search",
+      "text": "quarterly"
+    },
+    {
+      "caption": "Results filter as you type",
+      "say": "Results filter as you type.",
+      "focus": "#results"
+    },
+    {
+      "click": "#tab-stats"
+    },
+    {
+      "caption": "The stats tab shows the totals",
+      "say": "The stats tab shows the totals.",
+      "focus": "#stats"
+    },
+    {
+      "focus": "#faq"
+    },
+    {
+      "caption": "Further down, a short FAQ",
+      "say": "Further down, there is a short F A Q.",
+      "focus": "#faq"
+    },
+    {
+      "click": "#faq details summary"
+    },
+    {
+      "caption": "Answers open in place",
+      "say": "Answers open in place.",
+      "focus": "#faq details"
+    },
+    {
+      "goto": "/pricing.html",
+      "waitFor": ".plans"
+    },
+    {
+      "caption": "A second page lists the plans",
+      "say": "A second page lists the plans.",
+      "focus": ".plans"
+    },
+    {
+      "click": ".plan.pro button"
+    },
+    {
+      "caption": "Pick a plan to continue",
+      "say": "Pick a plan to continue.",
+      "focus": ".plan.pro"
+    },
+    {
+      "caption": "That is the whole tour",
+      "say": "That is the whole tour.",
+      "focus": null
+    }
+  ],
+  "polish": {
+    "camera": true,
+    "sound": true,
+    "frame": {
+      "address": "acme.example/board"
+    },
+    "cards": {
+      "title": "Acme Board",
+      "subtitle": "A short tour",
+      "brand": "#3b82f6",
+      "logo": "logo.svg",
+      "animation": "scale",
+      "end": {
+        "title": "Thanks for watching",
+        "subtitle": "acme.example"
+      }
+    },
+    "blur": true
+  }
+}

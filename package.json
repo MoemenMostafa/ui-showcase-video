@@ -7,7 +7,9 @@
   "scripts": {
     "record": "node scripts/record.ts",
     "narrate": "node scripts/narrate.ts",
-    "tighten": "node scripts/tighten.ts"
+    "tighten": "node scripts/tighten.ts",
+    "polish": "node scripts/polish.ts",
+    "check": "node scripts/check.ts"
   },
   "engines": {
     "node": ">=22.18"

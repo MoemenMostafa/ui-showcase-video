@@ -1,23 +1,27 @@
-// Add a spoken narration and subtitles to a video. Offline either way:
-//   - Kokoro (kokoro-js, an 82M-parameter neural voice: natural), the default;
-//   - macOS `say` with NARRATOR_ENGINE=say (or when kokoro-js is not installed).
+// Add a spoken narration and subtitles to a video. Three engines:
+//   - Kokoro (kokoro-js, an 82M-parameter neural voice: natural, offline, English-first), the default;
+//   - macOS `say` with NARRATOR_ENGINE=say (or when kokoro-js is not installed), offline;
+//   - Edge-TTS with NARRATOR_ENGINE=edge (msedge-tts: neural, multilingual, needs the network), default voice ar-EG-SalmaNeural.
 //   node scripts/narrate.ts <video.webm|mp4> <cues.json>   → <video>-narrated.mp4 + .srt
 // cues.json: [{ "t": seconds, "say": "spoken text", "file"?: pre-made clip }, …] — record.ts writes it;
 // in speech-timed recordings the clips already exist (record.ts made them first) and are reused as they are.
-// NARRATOR_VOICE (af_heart for Kokoro, Samantha for say), NARRATOR_RATE (say only, words per minute, 185),
-// NARRATOR_SPEED (1.0; e.g. 1.15 for a brisker pace — both engines).
+// NARRATOR_VOICE (af_heart for Kokoro, Samantha for say, ar-EG-SalmaNeural for edge — e.g. en-US-AriaNeural),
+// NARRATOR_RATE (say only, words per minute, 185), NARRATOR_SPEED (1.0; e.g. 1.15 for a brisker pace — all engines).
+// Polish "sound" (scripts/sound.ts): the UI sounds in <base>.track.json are mixed in under the voice, ducked while it speaks.
 // The Kokoro model (~90 MB) downloads from Hugging Face on first use and is cached in node_modules.
 // Behind a TLS-inspecting proxy set NODE_EXTRA_CA_CERTS to its CA certificate.
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import type { Track } from './camera.ts';
+import { renderSfx, SFX_MIX, sfxEvents, type SoundOptions } from './sound.ts';
 
 export interface Cue { t: number; say: string; file?: string }
 interface Kokoro { generate(text: string, opts: { voice: string; speed: number }): Promise<{ save(path: string): Promise<void> | void }> }
 /** Edge-TTS (network, neural): the multilingual engine — Kokoro is English-first. NARRATOR_VOICE e.g. ar-EG-Salma */
-interface Edge { setMetadata(voice: string, format: string): void; toStream(text: string): import('node:stream').Readable }
+interface Edge { toStream(text: string, speed: number): import('node:stream').Readable }
 
 const run = (cmd: string, args: string[]) => execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 const rmSyncSafe = (f: string) => { try { rmSync(f); } catch { /* not there */ } };
@@ -26,6 +30,21 @@ const duration = (file: string) => Number(run('ffprobe', ['-v', 'error', '-show_
 export function srtTime(s: number): string {
   const ms = Math.round(s * 1000), h = Math.floor(ms / 3_600_000), m = Math.floor(ms / 60_000) % 60, sec = Math.floor(ms / 1000) % 60;
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')},${String(ms % 1000).padStart(3, '0')}`;
+}
+
+/** Where the speech in a clip starts and ends (Kokoro pads ~0.3 s before and ~0.5 s after). */
+export function speechSpan(file: string): { from: number; to: number } {
+  const d = duration(file);
+  // ffmpeg prints the silencedetect lines on stderr
+  const log = spawnSync('ffmpeg', ['-hide_banner', '-i', file, '-af', 'silencedetect=noise=-40dB:d=0.05', '-f', 'null', '-'], { encoding: 'utf8' }).stderr;
+  const starts = [...log.matchAll(/silence_start: ([\d.]+)/g)].map(m => Number(m[1]));
+  const ends = [...log.matchAll(/silence_end: ([\d.]+)/g)].map(m => Number(m[1]));
+  const from = starts[0] !== undefined && starts[0] < 0.01 && ends[0] !== undefined ? ends[0] : 0;
+  const lastStart = starts[starts.length - 1];
+  // a trailing silence either has no end or ends at the end of the clip
+  const trailing = lastStart !== undefined && lastStart > from && (ends.length < starts.length || ends[ends.length - 1] >= d - 0.02);
+  const to = trailing ? lastStart : d;
+  return { from: Math.max(0, from - 0.03), to: Math.min(d, to + 0.05) };
 }
 
 async function loadKokoro(): Promise<Kokoro | undefined> {
@@ -44,7 +63,7 @@ export class Voice {
   readonly #rate = Number(process.env.NARRATOR_RATE ?? 185);
   private constructor(kokoro: Kokoro | undefined, edge: Edge | undefined) {
     this.#kokoro = kokoro; this.#edge = edge;
-    this.name = process.env.NARRATOR_VOICE ?? (kokoro ? 'af_heart' : 'Samantha');
+    this.name = process.env.NARRATOR_VOICE ?? (edge ? 'ar-EG-SalmaNeural' : kokoro ? 'af_heart' : 'Samantha');
     this.ext = edge ? 'mp3' : kokoro ? 'wav' : 'aiff';
     this.speed = Number(process.env.NARRATOR_SPEED ?? 1);
     if (!(this.speed >= 0.5 && this.speed <= 2)) throw new Error(`NARRATOR_SPEED must be 0.5–2, got ${process.env.NARRATOR_SPEED}`);
@@ -56,39 +75,44 @@ export class Voice {
     let edge: Edge | undefined;
     if (engine === 'edge') {
       const { MsEdgeTTS, OUTPUT_FORMAT } = await import('msedge-tts');
-      const tts = new MsEdgeTTS() as unknown as { setMetadata(v: string, f: string): Promise<void>; toStream(t: string): { audioStream: import('node:stream').Readable } };
+      const tts = new MsEdgeTTS() as unknown as { setMetadata(v: string, f: string): Promise<void>; toStream(t: string, o?: { rate?: number }): { audioStream: import('node:stream').Readable } };
       await tts.setMetadata(process.env.NARRATOR_VOICE ?? 'ar-EG-SalmaNeural', (OUTPUT_FORMAT as Record<string, string>).AUDIO_24KHZ_48KBITRATE_MONO_MP3 ?? 'audio-24khz-48kbitrate-mono-mp3');
-      edge = { toStream: (text: string) => tts.toStream(text).audioStream };
+      // rate: SSML's relative multiplier, so NARRATOR_SPEED and narrate's speed-up for a tight cue work as for Kokoro
+      edge = { toStream: (text: string, speed: number) => tts.toStream(text, { rate: speed }).audioStream };
     }
     return new Voice(kokoro, edge);
   }
-  /** Speak `text` into `file`; returns its length in seconds. */
+  /** Speak `text` into `file`; returns its length in seconds — measured the same way for every engine
+   *  (record.ts measures each clip once, up front, and speechSpan() finds where its speech ends). */
   async speak(text: string, file: string, speed = this.speed): Promise<number> {
-    if (this.#edge) {
-      const stream = this.#edge.toStream(text);
-      const fs = await import('node:fs');
-      rmSyncSafe(file);
-      await new Promise<void>((ok, fail) => {
-        stream.on('data', (c: Buffer) => { if (Buffer.isBuffer(c) && c.length) fs.appendFileSync(file, c); });
-        stream.on('end', ok); stream.on('error', fail); stream.on('close', () => ok());
-      });
-      return duration(file);
-    }
-    if (this.#kokoro) await (await this.#kokoro.generate(text, { voice: this.name, speed })).save(file);
+    if (this.#edge) await this.#edgeToFile(text, file, speed);
+    else if (this.#kokoro) await (await this.#kokoro.generate(text, { voice: this.name, speed })).save(file);
     else run('say', ['-v', this.name, '-r', String(Math.round(this.#rate * speed)), '-o', file, text]);
     return duration(file);
   }
+  async #edgeToFile(text: string, file: string, speed: number): Promise<void> {
+    const stream = this.#edge!.toStream(text, speed);
+    const fs = await import('node:fs');
+    rmSyncSafe(file);
+    await new Promise<void>((ok, fail) => {
+      stream.on('data', (c: Buffer) => { if (Buffer.isBuffer(c) && c.length) fs.appendFileSync(file, c); });
+      stream.on('end', ok); stream.on('error', fail); stream.on('close', () => ok());
+    });
+    if (!existsSync(file)) throw new Error(`Edge-TTS returned no audio for "${text.slice(0, 40)}" (network or voice name ${this.name}?)`);
+  }
 }
 
-/** Lay the clips onto the video at their times, normalise loudness, write <video>-narrated.mp4 + .srt. */
-export function mixNarration(video: string, clips: Array<Cue & { file: string; d: number }>): string {
+/** Lay the clips onto the video at their times, normalise loudness, write <video>-narrated.mp4 + .srt.
+ *  `sfx`: a WAV of UI sounds (scripts/sound.ts) to mix in under the normalised voice. */
+export function mixNarration(video: string, clips: Array<Cue & { file: string; d: number }>, sfx?: string): string {
   const total = duration(video);
   const out = video.replace(/\.(webm|mp4)$/, '') + '-narrated.mp4';
   const inputs = clips.flatMap(c => ['-i', c.file]);
   const delays = clips.map((c, i) => `[${i + 1}:a]adelay=${Math.round(c.t * 1000)}|${Math.round(c.t * 1000)},aresample=48000[a${i}]`).join(';');
   // loudnorm: Kokoro and say come out at different levels; -16 LUFS is the usual level for spoken video
-  const mix = `${clips.map((_, i) => `[a${i}]`).join('')}amix=inputs=${clips.length}:normalize=0,loudnorm=I=-16:TP=-1.5:LRA=11,apad[aud]`;
-  run('ffmpeg', ['-y', '-loglevel', 'error', '-i', video, ...inputs, '-filter_complex', `${delays};${mix}`,
+  const voice = `${clips.map((_, i) => `[a${i}]`).join('')}amix=inputs=${clips.length}:normalize=0,loudnorm=I=-16:TP=-1.5:LRA=11`;
+  const mix = sfx ? `${voice},aresample=48000[voice];${SFX_MIX('[voice]', `[${clips.length + 1}:a]`, '[aud]')}` : `${voice},apad[aud]`;
+  run('ffmpeg', ['-y', '-loglevel', 'error', '-i', video, ...inputs, ...(sfx ? ['-i', sfx] : []), '-filter_complex', `${delays};${mix}`,
     '-map', '0:v', '-map', '[aud]', '-t', String(total), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '23',
     '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', out]);
   const srt = clips.map((c, i) => `${i + 1}\n${srtTime(c.t)} --> ${srtTime(Math.min(c.t + c.d, clips[i + 1]?.t ?? total))}\n${c.say}\n`).join('\n');
@@ -121,7 +145,12 @@ async function main(): Promise<void> {
       }
     }
   }
-  console.log(mixNarration(video, clips));
+  // polish sound: render the UI sounds again, ducked under the (new) lines
+  const trackFile = video.replace(/(-narrated)?\.(webm|mp4)$/, '') + '.track.json';
+  const track = existsSync(trackFile) ? (JSON.parse(readFileSync(trackFile, 'utf8')) as Track) : undefined;
+  const sound = (track?.polish as { sound?: SoundOptions } | undefined)?.sound;
+  const sfx = track && sound && renderSfx(sfxEvents(track), clips.map(c => [c.t, c.t + c.d]), total, trackFile.replace(/\.track\.json$/, '.sfx.wav'), sound);
+  console.log(mixNarration(video, clips, sfx || undefined));
 }
 
 // run only as a script; record.ts imports Voice and mixNarration
