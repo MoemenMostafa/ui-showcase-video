@@ -1,0 +1,100 @@
+{
+  "base": "http://127.0.0.1:8765",
+  "out": "../../out/acme-ar",
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "steps": [
+    {
+      "caption": "Acme Board · جولة تجريبية",
+      "say": "هذا تطبيق أكمي بورد، تطبيق تجريبي صغير."
+    },
+    {
+      "goto": "/",
+      "waitFor": "#app"
+    },
+    {
+      "hover": "#search"
+    },
+    {
+      "caption": "البحث والأوامر في الشريط العلوي",
+      "say": "البحث والأوامر موجودة في الشريط العلوي.",
+      "focus": "header"
+    },
+    {
+      "type": "#search",
+      "text": "quarterly"
+    },
+    {
+      "caption": "النتائج تتصفّى أثناء الكتابة",
+      "say": "النتائج تتصفّى أثناء الكتابة.",
+      "focus": "#results"
+    },
+    {
+      "click": "#tab-stats"
+    },
+    {
+      "caption": "تبويب الإحصاءات يعرض المجاميع",
+      "say": "تبويب الإحصاءات يعرض المجاميع.",
+      "focus": "#stats"
+    },
+    {
+      "focus": "#faq"
+    },
+    {
+      "caption": "وفي الأسفل، أسئلة شائعة",
+      "say": "وفي الأسفل، توجد أسئلة شائعة قصيرة.",
+      "focus": "#faq"
+    },
+    {
+      "click": "#faq details summary"
+    },
+    {
+      "caption": "الإجابات تُفتح في مكانها",
+      "say": "الإجابات تُفتح في مكانها.",
+      "focus": "#faq details"
+    },
+    {
+      "goto": "/pricing.html",
+      "waitFor": ".plans"
+    },
+    {
+      "caption": "صفحة ثانية تعرض الباقات",
+      "say": "صفحة ثانية تعرض الباقات.",
+      "focus": ".plans"
+    },
+    {
+      "click": ".plan.pro button"
+    },
+    {
+      "caption": "اختر باقة للمتابعة",
+      "say": "اختر باقة للمتابعة.",
+      "focus": ".plan.pro"
+    },
+    {
+      "caption": "هذه هي الجولة كاملة",
+      "say": "وهذه هي الجولة كاملة.",
+      "focus": null
+    }
+  ],
+  "polish": {
+    "camera": true,
+    "sound": true,
+    "frame": {
+      "address": "acme.example/board"
+    },
+    "cards": {
+      "title": "Acme Board",
+      "subtitle": "جولة قصيرة",
+      "brand": "#3b82f6",
+      "logo": "logo.svg",
+      "animation": "scale",
+      "end": {
+        "title": "شكرًا للمشاهدة",
+        "subtitle": "acme.example"
+      }
+    },
+    "blur": true
+  }
+}

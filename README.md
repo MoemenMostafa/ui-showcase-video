@@ -21,6 +21,11 @@ The same tour without polish ([side by side](media/acme-plain-vs-polish.png)) re
 Reproduce it (after Setup below): `node examples/acme/serve.ts`, then in a second terminal
 `node scripts/record.ts examples/acme/acme.tour.json && node scripts/tighten.ts out/acme` → `out/acme-tight.mp4`.
 
+**Arabic:** the same tour with Arabic captions, narrated by Edge-TTS (`ar-EG-SalmaNeural`):
+**[watch the Arabic video](media/acme-board-arabic-edge.mp4)**. Reproduce it with
+`NARRATOR_ENGINE=edge node scripts/record.ts examples/acme/acme.ar.tour.json && node scripts/tighten.ts out/acme-ar`.
+Edge-TTS sends the narration text to Microsoft's online service.
+
 ## Setup
 
 ```bash
