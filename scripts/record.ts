@@ -21,6 +21,7 @@ export type Step =
   | { focus: string | null }
   | { pause: number; hold?: boolean }
   | { click: string; optional?: boolean; last?: boolean; force?: boolean }
+  | { clickXY: [number, number]; frame?: string }
   | { type: string; text: string; delayMs?: number }
   | { fill: string; text: string }
   | { press: string }
@@ -38,6 +39,8 @@ export interface Tour {
   out: string;
   viewport?: { width: number; height: number };
   colorScheme?: 'light' | 'dark';
+  /** fake "you are here" for the find-my-vehicle beats — e.g. Cairo downtown */
+  geolocation?: { latitude: number; longitude: number; accuracy?: number };
   steps: Step[];
 }
 
@@ -221,6 +224,15 @@ async function clickWithPointer(page: Page, loc: Locator, force = false): Promis
   await loc.click(force ? { force: true } : undefined);
 }
 
+/** a click at raw viewport coordinates (canvas drawing: map polygons, pin drops) */
+async function clickXYWithPointer(page: Page, x: number, y: number): Promise<void> {
+  await page.evaluate(([px, py]) => (window as unknown as DemoWindow).__demoMove(px, py), [x, y]);
+  await pause(700);
+  await page.evaluate(([px, py]) => (window as unknown as DemoWindow).__demoRipple(px, py), [x, y]);
+  await page.mouse.click(x, y);
+  await pause(200);
+}
+
 /**
  * Chrome's screencast sends a frame only when the screen changes; each is written with its timestamp and later
  * held on screen until the next one (ffmpeg concat with durations), then resampled to a constant frame rate.
@@ -294,7 +306,13 @@ async function main(): Promise<void> {
   }
 
   const browser = await chromium.launch({ channel: process.env.DEMO_BROWSER ?? 'chrome' });
-  const context = await browser.newContext({ viewport, colorScheme: tour.colorScheme ?? 'light' });
+  const context = await browser.newContext({
+    viewport, colorScheme: tour.colorScheme ?? 'light',
+    ...(tour.geolocation ? {
+      geolocation: { latitude: tour.geolocation.latitude, longitude: tour.geolocation.longitude, accuracy: tour.geolocation.accuracy ?? 20 },
+      permissions: ['geolocation'],
+    } : {}),
+  });
   let titleText: string | null = null; // the intro title card, kept over page loads until the next caption
   await context.exposeFunction('__demoTitleText', () => titleText);
   await context.addInitScript(POINTER);
@@ -305,6 +323,8 @@ async function main(): Promise<void> {
   const cues: Array<{ t: number; say: string; caption: string; file?: string; d?: number }> = [];
 
   for (const [index, step] of tour.steps.entries()) {
+    const kind = 'goto' in step ? 'goto ' + step.goto : 'caption' in step ? 'caption' : 'click' in step ? 'click ' + step.click : 'clickXY' in step ? 'clickXY' : 'type' in step ? 'type ' + step.type : 'fill' in step ? 'fill' : 'hover' in step ? 'hover ' + step.hover : 'press' in step ? 'press ' + step.press : Object.keys(step).join('+');
+    console.error(`step ${index}: ${kind}`);
     if ('goto' in step) {
       await page.goto(new URL(step.goto, tour.base).href);
       if (step.waitFor) await page.waitForSelector(step.waitFor, { timeout: 20_000 }).catch(() => {});
@@ -345,6 +365,8 @@ async function main(): Promise<void> {
       if (!(await all.count())) { const hit = locatorInAnyFrame(page, step.click); if (hit) all = hit; }
       if (!(await all.count())) { if (step.optional) continue; throw new Error(`click: nothing matches ${step.click}`); }
       await clickWithPointer(page, step.last ? all.last() : all.first(), step.force);
+    } else if ('clickXY' in step) {
+      await clickXYWithPointer(page, step.clickXY[0], step.clickXY[1]);
     } else if ('type' in step) {
       let typeLoc: Locator = page.locator(step.type).first();
       if (!(await typeLoc.count())) { const hit = locatorInAnyFrame(page, step.type); if (hit) typeLoc = hit; }
