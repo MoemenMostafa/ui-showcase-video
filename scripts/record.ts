@@ -7,6 +7,7 @@
 // recorder (which needs a matching ffmpeg download) is not used.
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -226,7 +227,9 @@ async function clickWithPointer(page: Page, loc: Locator, force = false): Promis
  */
 class Screencast {
   readonly #frames: Array<{ file: string; ts: number }> = [];
-  readonly #dir = mkdtempSync(join(tmpdir(), 'screencast-'));
+  // frames default to /tmp (disk); a tmpfs (e.g. /dev/shm) never stalls on disk writes under memory pressure,
+  // which otherwise backs up the CDP frame queue and OOMs the renderer (seen on a swapped-out box)
+  readonly #dir = mkdtempSync(join(process.env.SCREENCAST_TMPDIR ?? tmpdir(), 'screencast-'));
   #cdp?: CDPSession;
   async start(page: Page, size: { width: number; height: number }): Promise<void> {
     this.#cdp = await page.context().newCDPSession(page);
@@ -236,9 +239,10 @@ class Screencast {
       this.#frames.push({ file, ts: metadata.timestamp ?? Date.now() / 1000 });
       void this.#cdp?.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
     });
-    await this.#cdp.send('Page.startScreencast', { format: 'jpeg', quality: 85, maxWidth: size.width, maxHeight: size.height, everyNthFrame: 1 });
+    await this.#cdp.send('Page.startScreencast', { format: 'jpeg', quality: Number(process.env.SCREENCAST_QUALITY ?? 85), maxWidth: size.width, maxHeight: size.height, everyNthFrame: Number(process.env.SCREENCAST_EVERY_NTH ?? 1) });
   }
   async stop(): Promise<void> { await this.#cdp?.send('Page.stopScreencast').catch(() => {}); }
+  get dir(): string { return this.#dir; }
   /** Encode to a constant-rate MP4 starting at `t0` (seconds); even dimensions, as x264 requires. */
   encode(out: string, t0: number, end: number, size: { width: number; height: number }): void {
     if (!this.#frames.length) throw new Error('screencast captured no frames');
@@ -372,6 +376,8 @@ async function main(): Promise<void> {
   await browser.close();
   const video = `${out}.mp4`;
   cast.encode(video, t0 / 1000, end / 1000, viewport);
+  // frames captured: drop them (a full /tmp tmpfs ENOSPC'd later runs; 52k stale dirs piled up over days)
+  rmSync(cast.dir, { recursive: true, force: true });
   const cuesFile = `${out}.cues.json`;
   writeFileSync(cuesFile, JSON.stringify(cues, null, 2));
   console.log(video);
