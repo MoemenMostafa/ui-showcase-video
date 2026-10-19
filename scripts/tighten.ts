@@ -41,7 +41,8 @@ let at = 0, now = 0;
 const push = (a: number, b: number, out: number) => { if (b - a > 0.01) { segs.push({ a, b, out }); now += out; } };
 cues.forEach((c, i) => {
   const gapEnd = c.t;
-  push(at, gapEnd, i === 0 ? gapEnd - at : Math.min(GAP, gapEnd - at));
+  // before the first line (page load, first scroll): up to 1 s, so the app appears without seconds of dead air
+  push(at, gapEnd, Math.min(i === 0 ? 1.0 : GAP, gapEnd - at));
   newT.push(now);
   const lineEnd = Math.min(c.t + LEAD + (spans[i].to - spans[i].from) + TAIL, cues[i + 1]?.t ?? total);
   push(c.t, lineEnd, lineEnd - c.t);
