@@ -27,6 +27,8 @@ A tour file (JSON steps) drives Chrome; a drawn pointer glides to each target an
 | Other voice | `NARRATOR_VOICE=bf_emma` (UK) / `am_michael` / `af_bella`; default `af_heart` |
 | Brisker pace | `NARRATOR_SPEED=1.15` (both engines); budget words ÷ (2.6 × speed) |
 | No Kokoro / quick draft | `NARRATOR_ENGINE=say` (macOS voices; robotic) |
+| Arabic narration, offline | `NARRATOR_ENGINE=nabra` (Nabra-82M, voice `af_msa`, Modern Standard Arabic; text stays on this machine). Optional: run `bash scripts/nabra/setup.sh` once (~2 GB). Needs tashkeel: words go through the camel-tools diacritizer; a mark or two on a misread word in `say` steers it (يَعْرِض); `NABRA_DEBUG=1` logs what was read. Latin words in `say` are dropped |
+| Arabic or other languages, via the network | `NARRATOR_ENGINE=edge` (`ar-EG-SalmaNeural` default; the text is sent to Microsoft) |
 | Dynamic URL part | `"/#run/{{runId}}"` + `--var runId=…` |
 | Cycle a toggle to a state | `clickUntil` with `attr` + `equals` |
 | Target may be absent | `"optional": true` on `click` |

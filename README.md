@@ -4,7 +4,7 @@ Record a narrated showcase video of any web UI, offline:
 
 - a **drawn pointer** that glides to each target and a **ripple** where it clicks (headless browser video has no cursor);
 - **captions** on screen, and a **spotlight** on the area being talked about, scrolled to the middle of the screen;
-- a **natural spoken narration** with [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) (82M-parameter neural TTS, runs locally on CPU), or macOS `say`;
+- a **natural spoken narration** with [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) (82M-parameter neural TTS, runs locally on CPU), or macOS `say`, Edge-TTS, or (optional, Arabic) [Nabra](#arabic-narration-optional);
 - **subtitles** (`.srt`) and an MP4 ready to share.
 
 The tour is a JSON file of steps, so a new video needs no code. It is also a Claude Code skill
@@ -53,9 +53,44 @@ Tour option `"colorScheme": "dark"` records the app in dark mode (default light,
 node scripts/check.ts out/todomvc-tight.mp4    # pass/warn/fail table: silent gaps, loudness, lead-in, camera, blank frames, flashes
 ```
 
-Voices: `NARRATOR_VOICE=af_heart` (default, US), `af_bella`, `am_michael`, `bf_emma` (UK), `bm_george` (UK).
-`NARRATOR_SPEED=1.15` speeds both engines up for a brisker pace.
-`NARRATOR_ENGINE=say` uses macOS voices instead (`NARRATOR_VOICE=Samantha`, `NARRATOR_RATE=185`).
+### Narration engines
+
+| `NARRATOR_ENGINE` | Runs | Languages | Voices (`NARRATOR_VOICE`) |
+|---|---|---|---|
+| `kokoro` (default) | locally (Node, ~90 MB model) | English | `af_heart` (default, US), `af_bella`, `am_michael`, `bf_emma` (UK), `bm_george` (UK) |
+| `say` | locally (macOS) | the macOS voices' | `Samantha` (default); `NARRATOR_RATE=185` words per minute |
+| `edge` | over the network: the text is sent to Microsoft's Edge read-aloud service | many | `ar-EG-SalmaNeural` (default), `en-US-AriaNeural`, … |
+| `nabra` (optional) | locally (Python, ~2 GB set-up) | Arabic (Modern Standard) | `af_msa` (the only one); see [Arabic narration](#arabic-narration-optional) |
+
+`NARRATOR_SPEED=1.15` speeds every engine up for a brisker pace.
+
+### Arabic narration (optional)
+
+Only for Arabic videos; skip this if you narrate in English. Nothing here runs on `npm install`, and without it every
+other engine works exactly as before.
+
+[Nabra-82M](https://huggingface.co/oddadmix/Nabra-82M-v0.1) (Apache-2.0) is a fine-tune of Kokoro for Modern Standard
+Arabic, with one female voice, `af_msa`. It runs on this machine, so **the narration text never leaves it** (unlike
+`edge`). Set it up once, by hand:
+
+```bash
+bash scripts/nabra/setup.sh    # Python 3.11/3.12 venv in ~/.cache/nabra/venv + espeak-ng (Homebrew) + models
+NARRATOR_ENGINE=nabra node scripts/record.ts examples/acme/acme.ar.tour.json
+```
+
+setup.sh takes about 2 GB on disk (1.3 GB venv, mostly PyTorch; 120 MB of camel-tools diacritizer data in
+`~/.camel_tools`; the 625 MB model in the Hugging Face cache) and can be re-run safely. Behind a TLS proxy set `PIP_CERT`/`REQUESTS_CA_BUNDLE` to the
+proxy's CA certificate first. `NABRA_PYTHON` points at another Python that has the packages.
+
+- **Needs tashkeel (short-vowel marks).** Written Arabic usually leaves them out, and without them the phonemizer
+  (espeak-ng) guesses the vowels, often wrongly. So every word without marks is first run through the camel-tools
+  diacritizer (a statistical model that restores the most likely vowels); words you wrote with marks are kept as they
+  are. The diacritizer can still choose the wrong reading (a name, a rare word, an imperative like اختر): put a mark or
+  two on that word in `say` and the likeliest reading that agrees with them is used (يَعْرِض, not تَعَرَّضَ); a line where
+  every word has marks is read exactly as written. Captions keep the plain spelling.
+- Modern Standard Arabic only, not dialects. Latin-script words in `say` are dropped (spell them in Arabic letters).
+- One Python process loads the model once for all the lines (~10 s; a minute or two the very first time), then
+  0.3–0.7 s per line on CPU (Apple Silicon). `NABRA_DEBUG=1` logs the diacritized text and phonemes of each line.
 
 ## Tour steps
 
