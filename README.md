@@ -10,6 +10,17 @@ Record a narrated showcase video of any web UI, offline:
 The tour is a JSON file of steps, so a new video needs no code. It is also a Claude Code skill
 (`SKILL.md`): link this folder as `~/.claude/skills/recording-ui-showcase-videos` and ask Claude for a demo video.
 
+## Example
+
+[![Acme Board tour: title card, browser-window frame, camera zooming onto the Pro plan](media/acme-board-preview.gif)](media/acme-board-polish.mp4)
+
+A 27 s tour of a small test app with every polish option on (title and end cards, window frame, virtual camera,
+UI sounds, motion blur) and a Kokoro voice: **[watch the video with sound](media/acme-board-polish.mp4)**.
+The same tour without polish ([side by side](media/acme-plain-vs-polish.png)) records the page as it is.
+
+Reproduce it (after Setup below): `node examples/acme/serve.ts`, then in a second terminal
+`node scripts/record.ts examples/acme/acme.tour.json && node scripts/tighten.ts out/acme` → `out/acme-tight.mp4`.
+
 ## Setup
 
 ```bash

@@ -1,0 +1,40 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Acme Board</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font:15px/1.5 -apple-system,BlinkMacSystemFont,sans-serif;color:#1f2933;background:#f5f7fa}
+header{display:flex;align-items:center;gap:16px;padding:14px 28px;background:#fff;border-bottom:1px solid #e4e7eb;position:sticky;top:0}
+header h1{font-size:20px;margin:0 24px 0 0}#search{flex:0 0 320px;padding:8px 12px;border:1px solid #cbd2d9;border-radius:8px;font:inherit}
+header button,.btn{padding:8px 14px;border:0;border-radius:8px;background:#3b82f6;color:#fff;font:600 14px inherit;cursor:pointer}
+main{max-width:1100px;margin:0 auto;padding:28px}
+.tabs{display:flex;gap:8px;margin-bottom:16px}.tabs button{padding:8px 16px;border:1px solid #cbd2d9;border-radius:20px;background:#fff;font:inherit;cursor:pointer}
+.tabs button.on{background:#1f2933;color:#fff}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.card{background:#fff;border:1px solid #e4e7eb;border-radius:12px;padding:18px}
+.card h3{margin:0 0 6px;font-size:16px}#results li.hide{display:none}
+#stats{display:none}#stats.on{display:grid}.num{font-size:34px;font-weight:700;color:#3b82f6}
+section{margin-top:36px}#faq{margin-top:520px}details{background:#fff;border:1px solid #e4e7eb;border-radius:10px;padding:12px 16px;margin:8px 0}
+summary{font-weight:600;cursor:pointer}
+</style></head><body>
+<header><h1>Acme Board</h1><input id="search" placeholder="Search reports…"><button id="new">New report</button><a href="/pricing.html" class="btn" style="text-decoration:none">Pricing</a></header>
+<main id="app">
+  <div class="tabs"><button id="tab-list" class="on">Reports</button><button id="tab-stats">Stats</button></div>
+  <ul id="results" class="grid" style="list-style:none;padding:0;margin:0">
+    <li class="card"><h3>Quarterly report</h3>Revenue, costs and margins for Q3.</li>
+    <li class="card"><h3>Weekly sync notes</h3>Decisions and owners from Monday.</li>
+    <li class="card"><h3>Hiring plan</h3>Open roles for the next two quarters.</li>
+    <li class="card"><h3>Quarterly goals</h3>Targets per team, with status.</li>
+    <li class="card"><h3>Incident review</h3>What broke on Friday and why.</li>
+    <li class="card"><h3>Roadmap</h3>Themes for the coming year.</li>
+  </ul>
+  <div id="stats" class="grid"><div class="card"><div class="num">128</div>reports</div><div class="card"><div class="num">42</div>authors</div><div class="card"><div class="num">7</div>teams</div></div>
+  <section id="faq"><h2>FAQ</h2>
+    <details><summary>Who can see my reports?</summary><p>Everyone in your workspace, unless you mark a report private.</p></details>
+    <details><summary>Can I export to PDF?</summary><p>Yes, from the report menu.</p></details>
+  </section>
+  <div style="height:300px"></div>
+</main>
+<script>
+const q=document.getElementById('search');q.addEventListener('input',()=>{const v=q.value.toLowerCase().split(' ')[0];for(const li of document.querySelectorAll('#results li'))li.classList.toggle('hide',!!v&&!li.textContent.toLowerCase().includes(v));});
+const tl=document.getElementById('tab-list'),ts=document.getElementById('tab-stats'),r=document.getElementById('results'),s=document.getElementById('stats');
+ts.onclick=()=>{ts.classList.add('on');tl.classList.remove('on');r.style.display='none';s.classList.add('on');};
+tl.onclick=()=>{tl.classList.add('on');ts.classList.remove('on');r.style.display='';s.classList.remove('on');};
+</script></body></html>

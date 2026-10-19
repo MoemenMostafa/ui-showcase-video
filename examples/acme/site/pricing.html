@@ -1,0 +1,13 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Pricing</title>
+<style>body{margin:0;font:15px/1.5 -apple-system,BlinkMacSystemFont,sans-serif;color:#1f2933;background:#fff}
+h1{text-align:center;margin:60px 0 10px}p.lead{text-align:center;color:#616e7c;margin:0 0 40px}
+.plans{display:flex;gap:24px;justify-content:center}.plan{width:260px;border:1px solid #e4e7eb;border-radius:14px;padding:24px;background:#f9fafb}
+.plan.pro{border-color:#3b82f6;box-shadow:0 8px 30px rgba(59,130,246,.15)}.price{font-size:36px;font-weight:700}
+.plan button{width:100%;margin-top:16px;padding:10px;border:0;border-radius:8px;background:#e4e7eb;font:600 14px inherit;cursor:pointer}.plan.pro button{background:#3b82f6;color:#fff}
+.plan button.picked{background:#16a34a;color:#fff}</style></head><body>
+<h1>Pricing</h1><p class="lead">Simple plans for teams of any size.</p>
+<div class="plans">
+ <div class="plan"><h3>Free</h3><div class="price">$0</div><p>3 boards, 1 workspace.</p><button>Choose</button></div>
+ <div class="plan pro"><h3>Pro</h3><div class="price">$12</div><p>Unlimited boards, exports.</p><button onclick="this.classList.add('picked');this.textContent='Selected ✓'">Choose</button></div>
+ <div class="plan"><h3>Team</h3><div class="price">$29</div><p>SSO, audit log, roles.</p><button>Choose</button></div>
+</div></body></html>
