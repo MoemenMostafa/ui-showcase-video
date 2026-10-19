@@ -89,6 +89,7 @@ writeFileSync(out.replace(/\.mp4$/, '.srt'), cues.map((c, i) => {
   const from = newT[i] + LEAD, to = Math.min(from + spans[i].to - spans[i].from, newT[i + 1] ?? now);
   return `${i + 1}\n${srtTime(from)} --> ${srtTime(to)}\n${c.say}\n`;
 }).join('\n'));
+writeFileSync(`${base}-tight.typing.json`, JSON.stringify(typing.map(([a, b]) => [toTight(a), toTight(b)])));
 writeFileSync(`${base}-tight.cues.json`, JSON.stringify(cues.map((c, i) => ({ t: newT[i], caption: c.caption, say: c.say, voice: [newT[i] + LEAD, newT[i] + LEAD + spans[i].to - spans[i].from] })), null, 2));
 if (existsSync(`${base}.camera.json`)) { // the camera per tightened frame, for scripts/check.ts
   const cam = JSON.parse(readFileSync(`${base}.camera.json`, 'utf8')) as { fps: number; frames: unknown[] };

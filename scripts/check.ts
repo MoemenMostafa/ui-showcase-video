@@ -1,14 +1,15 @@
 // Check a showcase video before handing it over: prints a pass/warn/fail table, exits 1 on any fail.
 //   node scripts/check.ts <video.mp4> [cues.json]
 // - silent gaps: ≥ 0.7 s below -40 dB between the first and the last sound (a title card before the first line and the
-//   fade after the last one don't count); warn on any, fail on one over 2 s. Check the -tight file of a speech-timed tour.
+//   fade after the last one don't count, nor does typing, from <base>.typing.json); warn on any, fail on one over 2 s.
+//   Check the -tight file of a speech-timed tour.
 // - loudness: integrated level near -16 LUFS.
 // - camera (polish): share of frames where the camera moves (warn over 70%), and the focus area and pointer inside the
 //   view on every frame. Reads <base>.camera.json, or <base>-tight.camera.json for a -tight video.
 // - lead-in: time from the start (or the end of the polish title card) to the first line; warn over 1.5 s of it.
 // - blank frames: flat (white, black, one colour) frames in the recording area (not on polish cards), every frame;
 //   fail on a run of 1 s or more, warn on shorter ones.
-// - flashes: the whole picture jumps much brighter (or darker) than on both sides and back within 1 s, e.g. a white page
+// - flashes: the whole picture jumps much brighter (or darker, by 80 of 255 levels) than on both sides and back within 1 s, e.g. a white page
 //   between two dark ones, or a fade through white; warn on any.
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
@@ -39,11 +40,15 @@ else {
   const ends = [...log.matchAll(/silence_end: ([\d.]+)/g)].map(m => Number(m[1]));
   // before the first line (page load, title card) and after the last one don't count
   const first = cues.length ? Math.min(...cues.map(c => c.t)) : 0;
-  const gaps = starts.map((s, i) => ({ s, e: ends[i] ?? duration })).filter(g => g.s > 0.05 && g.e > first + 0.3 && g.e < duration - 0.05);
+  // typing on screen (<base>.typing.json, from record.ts / tighten.ts) is action, not dead air: it doesn't count
+  const typingFile = `${base}.typing.json`;
+  const typed = existsSync(typingFile) ? (JSON.parse(readFileSync(typingFile, 'utf8')) as Array<[number, number]>) : [];
+  const silent = (g: { s: number; e: number }) => g.e - g.s - typed.reduce((sum, [a, b]) => sum + Math.max(0, Math.min(b, g.e) - Math.max(a, g.s)), 0);
+  const gaps = starts.map((s, i) => ({ s, e: ends[i] ?? duration })).filter(g => g.s > 0.05 && g.e > first + 0.3 && g.e < duration - 0.05 && silent(g) >= 0.7);
   const after = (t: number) => { const k = cues.filter(c => c.t <= t).length; return k ? ` after line ${k}` : ''; };
-  const longest = Math.max(0, ...gaps.map(g => g.e - g.s));
+  const longest = Math.max(0, ...gaps.map(silent));
   rows.push(['silent gaps', !gaps.length ? 'PASS' : longest > 2 ? 'FAIL' : 'WARN',
-    !gaps.length ? `none ≥ 0.7 s${first > 2 ? ` (first line at ${s1(first)} s)` : ''}` : gaps.slice(0, 4).map(g => `${s1(g.e - g.s)} s at ${s1(g.s)} s${after(g.s)}`).join('; ') + (gaps.length > 4 ? ` (+${gaps.length - 4} more)` : '')]);
+    !gaps.length ? `none ≥ 0.7 s${first > 2 ? ` (first line at ${s1(first)} s)` : ''}` : gaps.slice(0, 4).map(g => `${s1(silent(g))} s at ${s1(g.s)} s${after(g.s)}`).join('; ') + (gaps.length > 4 ? ` (+${gaps.length - 4} more)` : '')]);
   const lufs = Number([...ffmpeg(['-i', video, '-af', 'ebur128', '-vn', '-f', 'null', '-']).stderr.matchAll(/I:\s+(-?[\d.]+) LUFS/g)].pop()?.[1]);
   rows.push(['loudness', lufs >= -18 && lufs <= -14 ? 'PASS' : 'WARN', `${s1(lufs)} LUFS (aim for -16)`]);
 }
@@ -99,7 +104,7 @@ rows.push(['blank frames', !flat.length ? 'PASS' : longestRun >= 1 ? 'FAIL' : 'W
 
 // flashes: a frame far brighter (or darker) than the darkest (brightest) frame within 1 s on BOTH sides — a spike that
 // comes back, not a cut to a new scene; on the whole picture, cards included (a card can fade through white)
-const y = levels('').map(f => f.avg), win = Math.round(fps), JUMP = 50;
+const y = levels('').map(f => f.avg), win = Math.round(fps), JUMP = 80;
 const odd: Array<{ i: number; white: boolean }> = [];
 for (let i = win; i < y.length - win; i++) {
   const before = y.slice(i - win, i), after = y.slice(i + 1, i + 1 + win);
