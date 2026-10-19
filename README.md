@@ -31,6 +31,7 @@ node scripts/record.ts examples/todomvc.tour.json
 node scripts/narrate.ts out/todomvc.mp4 out/todomvc.cues.json    # re-voice only
 node scripts/tighten.ts out/todomvc                               # speech timing: squeeze the action between lines
 #   <out>-tight.mp4 (+ .srt, -tight.cues.json)  lines at 1x, gaps -> TIGHT_GAP s (default 0.3), clip padding trimmed
+#   typing (<out>.typing.json) stays readable: 1x, at most TIGHT_TYPE_MAX s (default 3)
 ```
 
 Tour option `"colorScheme": "dark"` records the app in dark mode (default light, regardless of the OS).

@@ -4,6 +4,7 @@
 // because each line's video (caption up, screen settled) plays at normal speed under it.
 //   node scripts/tighten.ts out/my-demo   → out/my-demo-tight.mp4 (+ .srt, -tight.cues.json)
 // Reads <base>.mp4 (silent) and <base>.cues.json (each cue: t, caption, say, file = its voice clip, d = clip length).
+// Typing (<base>.typing.json, from record.ts) is not squeezed: it plays at 1×, or sped up to fit TIGHT_TYPE_MAX s (3).
 // Polish (scripts/polish.ts): the end card plays at 1×, the UI sounds are re-timed, and <base>.camera.json is carried
 // through the time remap into <base>-tight.camera.json (the camera itself is already in <base>.mp4).
 import { execFileSync } from 'node:child_process';
@@ -16,6 +17,7 @@ type Cue = { t: number; caption: string; say: string; file: string; d: number };
 const base = process.argv[2];
 if (!base) throw new Error('usage: node scripts/tighten.ts <out base, e.g. out/my-demo>');
 const GAP = Number(process.env.TIGHT_GAP ?? 0.3); // s of (sped-up) action between one line's end and the next caption
+const TYPE_MAX = Number(process.env.TIGHT_TYPE_MAX ?? 3); // s a `type` step may take at most (longer text is sped up)
 const LEAD = 0.1, TAIL = 0.15; // caption shows LEAD s before the voice; the line's video runs TAIL s past its last word
 
 const run = (cmd: string, args: string[]) => execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -25,19 +27,34 @@ const cues = (JSON.parse(readFileSync(`${base}.cues.json`, 'utf8')) as Cue[]).so
 const spans = cues.map(c => speechSpan(c.file));
 const track = existsSync(`${base}.track.json`) ? (JSON.parse(readFileSync(`${base}.track.json`, 'utf8')) as Track) : undefined;
 const endCard = track?.endCard ?? 0; // s of polish end card, kept at 1×
+const typing = existsSync(`${base}.typing.json`) ? (JSON.parse(readFileSync(`${base}.typing.json`, 'utf8')) as Array<[number, number]>) : [];
 
 // segments of the original video: [a, b) played at 1× (a line) or squeezed into GAP s (the action between lines)
 const segs: Array<{ a: number; b: number; out: number }> = [];
 const newT: number[] = [];
 let at = 0, now = 0;
 const push = (a: number, b: number, out: number) => { if (b - a > 0.01) { segs.push({ a, b, out }); now += out; } };
+/** Squeeze the action in [a, b) into `budget` s, except typing: squeezed to a blur it can't be read (and its ticks buzz). */
+const squeeze = (a: number, b: number, budget: number) => {
+  const parts: Array<[number, number, boolean]> = [];
+  let x = a;
+  for (const [ta, tb] of typing) {
+    const s = Math.max(ta, x), e = Math.min(tb, b);
+    if (e - s <= 0.01) continue;
+    parts.push([x, s, false], [s, e, true]);
+    x = e;
+  }
+  parts.push([x, b, false]);
+  const rest = parts.reduce((sum, [pa, pb, typed]) => sum + (typed ? 0 : pb - pa), 0), k = rest > budget ? budget / rest : 1;
+  for (const [pa, pb, typed] of parts) push(pa, pb, typed ? Math.min(pb - pa, TYPE_MAX) : (pb - pa) * k);
+};
 const titleCard = Math.min(track?.offset ?? 0, cues[0]?.t ?? 0); // s of polish title card, kept at 1×
 push(0, titleCard, titleCard);
 at = titleCard;
 cues.forEach((c, i) => {
   const gapEnd = c.t;
   // before the first line (page load, first scroll): up to 1 s, so the app appears without seconds of dead air
-  push(at, gapEnd, Math.min(i === 0 ? 1.0 : GAP, gapEnd - at));
+  squeeze(at, gapEnd, i === 0 ? 1.0 : GAP);
   newT.push(now);
   const lineEnd = Math.min(c.t + LEAD + (spans[i].to - spans[i].from) + TAIL, cues[i + 1]?.t ?? total);
   push(c.t, lineEnd, lineEnd - c.t);

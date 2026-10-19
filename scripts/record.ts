@@ -356,6 +356,7 @@ async function main(): Promise<void> {
   const t0 = Date.now(); // the video starts here
   if (polish) { tracker = new Tracker(page, t0); tracker.start(); }
   const cues: Array<{ t: number; say: string; caption: string; file?: string; d?: number }> = [];
+  const typing: Array<[number, number]> = []; // when each `type` step typed (s), so tighten.ts keeps it readable
 
   for (const [index, step] of tour.steps.entries()) {
     const stepStart = Date.now();
@@ -413,7 +414,9 @@ async function main(): Promise<void> {
       await clickWithPointer(page, step.last ? all.last() : all.first());
     } else if ('type' in step) {
       await clickWithPointer(page, page.locator(step.type).first());
+      const from = (Date.now() - t0) / 1000;
       for (const ch of step.text) { tracker?.event({ type: 'key' }); await page.keyboard.type(ch); await pause(step.delayMs ?? 110); }
+      typing.push([from, (Date.now() - t0) / 1000]);
     } else if ('fill' in step) {
       await page.locator(step.fill).first().fill(step.text);
     } else if ('hover' in step) {
@@ -450,6 +453,7 @@ async function main(): Promise<void> {
     writeFileSync(`${out}.track.json`, JSON.stringify(track));
     await renderPolish(out);
     for (const c of cues) c.t += cards.title; // the title card comes first
+    for (const span of typing) { span[0] += cards.title; span[1] += cards.title; }
     if (polish.sound) {
       const spoken = cues.filter(c => c.d !== undefined).map((c): [number, number] => [c.t, c.t + c.d!]);
       sfx = renderSfx(sfxEvents(track), spoken, track.duration + cards.title + cards.end, `${out}.sfx.wav`, polish.sound);
@@ -457,6 +461,7 @@ async function main(): Promise<void> {
   }
   const cuesFile = `${out}.cues.json`;
   writeFileSync(cuesFile, JSON.stringify(cues, null, 2));
+  writeFileSync(`${out}.typing.json`, JSON.stringify(typing));
   console.log(video);
   if (speechTimed) {
     console.log(mixNarration(video, cues.filter((c): c is typeof c & { file: string; d: number } => !!c.file), sfx));
