@@ -18,7 +18,7 @@ A tour file (JSON steps) drives Chrome; a drawn pointer glides to each target an
    - `ffmpeg -i <final.mp4> -af silencedetect=noise=-40dB:d=0.7 -vn -f null -` lists no long gaps (speech timing: check the `-tight` file; only the fade after the last line may exceed it);
    - narrator printed no `cue N … needs X s` warning (else shorten that line or lengthen its pause, re-run narrate);
    - `ffmpeg -i <narrated.mp4> -af volumedetect -vn -f null -` → mean volume about −16…−22 dB (not silent);
-   - `node scripts/check.ts <final.mp4>` prints these checks plus camera motion, focus-in-frame and blank frames as a pass/warn/fail table;
+   - `node scripts/check.ts <final.mp4>` prints these checks plus lead-in, camera motion, focus-in-frame, blank frames and short flashes as a pass/warn/fail table;
    - for EVERY cue extract two frames — ~1 s after its `t` and just before its line ends (`ffmpeg -ss <t> -i … -frames:v 1 x.png`; use the `-tight.cues.json` times for a tightened file) — and look at both: caption matches what's on screen, focus mark and pointer on the thing described, and the screen did not change between the two. Report a cue table (t, caption, what the frame shows, OK) and re-record until every row is OK; sampling a few cues misses drift.
 
 ## Quick reference

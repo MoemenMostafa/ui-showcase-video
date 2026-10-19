@@ -37,7 +37,7 @@ node scripts/tighten.ts out/todomvc                               # speech timin
 Tour option `"colorScheme": "dark"` records the app in dark mode (default light, regardless of the OS).
 
 ```bash
-node scripts/check.ts out/todomvc-tight.mp4    # pass/warn/fail table: silent gaps, loudness, camera, blank frames
+node scripts/check.ts out/todomvc-tight.mp4    # pass/warn/fail table: silent gaps, loudness, lead-in, camera, blank frames, flashes
 ```
 
 Voices: `NARRATOR_VOICE=af_heart` (default, US), `af_bella`, `am_michael`, `bf_emma` (UK), `bm_george` (UK).

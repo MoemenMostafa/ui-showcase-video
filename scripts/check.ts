@@ -5,7 +5,11 @@
 // - loudness: integrated level near -16 LUFS.
 // - camera (polish): share of frames where the camera moves (warn over 70%), and the focus area and pointer inside the
 //   view on every frame. Reads <base>.camera.json, or <base>-tight.camera.json for a -tight video.
-// - blank frames: flat (white, black, one colour) frames in the recording area (not on polish cards); fail on a run of 1 s or more.
+// - lead-in: time from the start (or the end of the polish title card) to the first line; warn over 1.5 s of it.
+// - blank frames: flat (white, black, one colour) frames in the recording area (not on polish cards), every frame;
+//   fail on a run of 1 s or more, warn on shorter ones.
+// - flashes: the whole picture jumps much brighter (or darker) than on both sides and back within 1 s, e.g. a white page
+//   between two dark ones, or a fade through white; warn on any.
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 
@@ -21,9 +25,9 @@ const probe = (entries: string) => spawnSync('ffprobe', ['-v', 'error', '-show_e
 const duration = Number(probe('format=duration'));
 const hasAudio = probe('stream=codec_type').includes('audio');
 const cuesFile = cuesArg ?? [`${base}.cues.json`].find(f => existsSync(f));
-const cues = cuesFile ? (JSON.parse(readFileSync(cuesFile, 'utf8')) as Array<{ t: number }>) : [];
+const cues = cuesFile ? (JSON.parse(readFileSync(cuesFile, 'utf8')) as Array<{ t: number; voice?: [number, number] }>) : [];
 const camFile = `${base}.camera.json`;
-const cam = existsSync(camFile) ? (JSON.parse(readFileSync(camFile, 'utf8')) as Camera) : undefined;
+const cam = existsSync(camFile) ? (JSON.parse(readFileSync(camFile, 'utf8')) as Camera & { offset?: number }) : undefined;
 const s1 = (v: number) => v.toFixed(1);
 const rows: Row[] = [];
 
@@ -42,6 +46,13 @@ else {
     !gaps.length ? `none ≥ 0.7 s${first > 2 ? ` (first line at ${s1(first)} s)` : ''}` : gaps.slice(0, 4).map(g => `${s1(g.e - g.s)} s at ${s1(g.s)} s${after(g.s)}`).join('; ') + (gaps.length > 4 ? ` (+${gaps.length - 4} more)` : '')]);
   const lufs = Number([...ffmpeg(['-i', video, '-af', 'ebur128', '-vn', '-f', 'null', '-']).stderr.matchAll(/I:\s+(-?[\d.]+) LUFS/g)].pop()?.[1]);
   rows.push(['loudness', lufs >= -18 && lufs <= -14 ? 'PASS' : 'WARN', `${s1(lufs)} LUFS (aim for -16)`]);
+}
+
+// lead-in: silence between the title card (polish) or the start and the first line
+if (!cues.length) rows.push(['lead-in', 'SKIP', 'no cues']);
+else {
+  const card = cam?.offset ?? 0, first = Math.min(...cues.map(c => c.voice?.[0] ?? c.t)), lead = first - card;
+  rows.push(['lead-in', lead > 1.5 ? 'WARN' : 'PASS', `first line at ${s1(first)} s, ${s1(Math.max(0, lead))} s after ${card ? 'the title card' : 'the start'}`]);
 }
 
 // camera: moving vs still, and nothing that matters cut off
@@ -67,20 +78,41 @@ else {
     `focus inside on ${focusN - focusBad}/${focusN} frames, pointer on ${ptrN - ptrBad}/${ptrN}` + (bad.length ? `; first miss at ${s1(bad[0] / cam!.fps)} s` : '')]);
 }
 
-// blank frames: nearly one flat level across the recording area, sampled 10× a second
+// blank frames: nearly one flat level across the recording area, on every frame (a flash can be 2 frames long)
+const fps = cam?.fps ?? 30;
 const [cx, cy, cw, ch] = cam?.content ?? [0, 0, 0, 0];
 const crop = cam ? `crop=${cw}:${ch}:${cx}:${cy},` : '';
-const stats = ffmpeg(['-i', video, '-vf', `fps=10,${crop}signalstats,metadata=print:file=-`, '-an', '-f', 'null', '-']).stdout;
+const levels = (vf: string) => ffmpeg(['-i', video, '-vf', `fps=${fps},${vf}scale=480:-2,signalstats,metadata=print:file=-`, '-an', '-f', 'null', '-']).stdout
+  .split(/(?=frame:)/).map(block => {
+    const v = (k: string) => Number(new RegExp(`signalstats\\.${k}=([\\d.]+)`).exec(block)?.[1]);
+    return { t: Number(/pts_time:([\d.]+)/.exec(block)?.[1]), avg: v('YAVG'), flat: v('YHIGH') - v('YLOW') <= 2 && v('YMAX') - v('YMIN') <= 12 };
+  }).filter(f => Number.isFinite(f.t) && Number.isFinite(f.avg));
 const flat: Array<{ t: number; white: boolean }> = [];
-for (const block of stats.split(/(?=frame:)/)) {
-  const t = Number(/pts_time:([\d.]+)/.exec(block)?.[1]), v = (k: string) => Number(new RegExp(`signalstats\\.${k}=([\\d.]+)`).exec(block)?.[1]);
-  const onCard = cam && !cam.frames[Math.min(cam.frames.length - 1, Math.round(t * cam.fps))]; // title/end card: fades are meant
-  if (Number.isFinite(t) && !onCard && v('YHIGH') - v('YLOW') <= 2 && v('YMAX') - v('YMIN') <= 12) flat.push({ t, white: v('YAVG') > 200 });
+for (const f of levels(crop)) {
+  const onCard = cam && !cam.frames[Math.min(cam.frames.length - 1, Math.round(f.t * cam.fps))]; // title/end card: fades are meant
+  if (!onCard && f.flat) flat.push({ t: f.t, white: f.avg > 200 });
 }
 let run = 0, longestRun = 0;
-flat.forEach((f, i) => { run = i && f.t - flat[i - 1].t < 0.15 ? run + 0.1 : 0.1; longestRun = Math.max(longestRun, run); });
+flat.forEach((f, i) => { run = i && f.t - flat[i - 1].t < 1.5 / fps ? run + 1 / fps : 1 / fps; longestRun = Math.max(longestRun, run); });
 rows.push(['blank frames', !flat.length ? 'PASS' : longestRun >= 1 ? 'FAIL' : 'WARN',
-  !flat.length ? 'none (sampled 10/s)' : `${flat.length} of ${Math.round(duration * 10)} samples flat (${flat.filter(f => f.white).length} white), longest ${s1(longestRun)} s, first at ${s1(flat[0].t)} s`]);
+  !flat.length ? 'none' : `${flat.length} of ${Math.round(duration * fps)} frames flat (${flat.filter(f => f.white).length} white), longest ${s1(longestRun)} s, first at ${s1(flat[0].t)} s`]);
+
+// flashes: a frame far brighter (or darker) than the darkest (brightest) frame within 1 s on BOTH sides — a spike that
+// comes back, not a cut to a new scene; on the whole picture, cards included (a card can fade through white)
+const y = levels('').map(f => f.avg), win = Math.round(fps), JUMP = 50;
+const odd: Array<{ i: number; white: boolean }> = [];
+for (let i = win; i < y.length - win; i++) {
+  const before = y.slice(i - win, i), after = y.slice(i + 1, i + 1 + win);
+  if (y[i] - Math.max(Math.min(...before), Math.min(...after)) > JUMP) odd.push({ i, white: true });
+  else if (Math.min(Math.max(...before), Math.max(...after)) - y[i] > JUMP) odd.push({ i, white: false });
+}
+const flashes: Array<{ from: number; to: number; white: boolean }> = [];
+for (const o of odd) {
+  const last = flashes[flashes.length - 1];
+  if (last && o.i - last.to <= 2 && o.white === last.white) last.to = o.i; else flashes.push({ from: o.i, to: o.i, white: o.white });
+}
+rows.push(['flashes', flashes.length ? 'WARN' : 'PASS', !flashes.length ? 'none under 1 s' : flashes.slice(0, 4)
+  .map(f => `${s1((f.to - f.from + 1) / fps)} s ${f.white ? 'bright' : 'dark'} at ${s1(f.from / fps)} s`).join('; ') + (flashes.length > 4 ? ` (+${flashes.length - 4} more)` : '')]);
 
 console.log(`${video} (${s1(duration)} s)`);
 const w = Math.max(...rows.map(r => r[0].length));
