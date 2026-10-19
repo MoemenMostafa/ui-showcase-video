@@ -221,12 +221,15 @@ class Screencast {
   encode(out: string, t0: number, end: number, size: { width: number; height: number }): void {
     if (!this.#frames.length) throw new Error('screencast captured no frames');
     const lines: string[] = [];
-    this.#frames.forEach((f, i) => {
-      const next = this.#frames[i + 1]?.ts ?? end;
+    // in capture order: frames can arrive out of order, and clamping each negative gap to 1 ms made the video run
+    // seconds behind the clock (behind the captions and the voice)
+    const frames = [...this.#frames].sort((a, b) => a.ts - b.ts);
+    frames.forEach((f, i) => {
+      const next = frames[i + 1]?.ts ?? end;
       const from = i === 0 ? t0 : f.ts;
       lines.push(`file '${f.file}'`, `duration ${Math.max(0.001, next - from).toFixed(3)}`);
     });
-    lines.push(`file '${this.#frames[this.#frames.length - 1].file}'`); // concat needs the last file repeated
+    lines.push(`file '${frames[frames.length - 1].file}'`); // concat needs the last file repeated
     const list = join(this.#dir, 'frames.txt');
     writeFileSync(list, lines.join('\n'));
     const w = size.width - (size.width % 2), h = size.height - (size.height % 2);
