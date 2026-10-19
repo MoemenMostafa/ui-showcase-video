@@ -4,8 +4,13 @@
 // because each line's video (caption up, screen settled) plays at normal speed under it.
 //   node scripts/tighten.ts out/my-demo   → out/my-demo-tight.mp4 (+ .srt, -tight.cues.json)
 // Reads <base>.mp4 (silent) and <base>.cues.json (each cue: t, caption, say, file = its voice clip, d = clip length).
-import { execFileSync, spawnSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+// Polish (scripts/polish.ts): the end card plays at 1×, the UI sounds are re-timed, and <base>.camera.json is carried
+// through the time remap into <base>-tight.camera.json (the camera itself is already in <base>.mp4).
+import { execFileSync } from 'node:child_process';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import type { Track } from './camera.ts';
+import { speechSpan } from './narrate.ts';
+import { renderSfx, SFX_MIX, sfxEvents, type SoundOptions } from './sound.ts';
 
 type Cue = { t: number; caption: string; say: string; file: string; d: number };
 const base = process.argv[2];
@@ -15,30 +20,20 @@ const LEAD = 0.1, TAIL = 0.15; // caption shows LEAD s before the voice; the lin
 
 const run = (cmd: string, args: string[]) => execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 const duration = (f: string) => Number(run('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', f]).trim());
-/** Where the speech in a clip starts and ends (Kokoro pads ~0.3 s before and ~0.5 s after). */
-function speechSpan(file: string): { from: number; to: number } {
-  const d = duration(file);
-  // ffmpeg prints the silencedetect lines on stderr
-  const log = spawnSync('ffmpeg', ['-hide_banner', '-i', file, '-af', 'silencedetect=noise=-40dB:d=0.05', '-f', 'null', '-'], { encoding: 'utf8' }).stderr;
-  const starts = [...log.matchAll(/silence_start: ([\d.]+)/g)].map(m => Number(m[1]));
-  const ends = [...log.matchAll(/silence_end: ([\d.]+)/g)].map(m => Number(m[1]));
-  const from = starts[0] !== undefined && starts[0] < 0.01 && ends[0] !== undefined ? ends[0] : 0;
-  const lastStart = starts[starts.length - 1];
-  // a trailing silence either has no end or ends at the end of the clip
-  const trailing = lastStart !== undefined && lastStart > from && (ends.length < starts.length || ends[ends.length - 1] >= d - 0.02);
-  const to = trailing ? lastStart : d;
-  return { from: Math.max(0, from - 0.03), to: Math.min(d, to + 0.05) };
-}
-
 const video = `${base}.mp4`, total = duration(video);
 const cues = (JSON.parse(readFileSync(`${base}.cues.json`, 'utf8')) as Cue[]).sort((a, b) => a.t - b.t);
 const spans = cues.map(c => speechSpan(c.file));
+const track = existsSync(`${base}.track.json`) ? (JSON.parse(readFileSync(`${base}.track.json`, 'utf8')) as Track) : undefined;
+const endCard = track?.endCard ?? 0; // s of polish end card, kept at 1×
 
 // segments of the original video: [a, b) played at 1× (a line) or squeezed into GAP s (the action between lines)
 const segs: Array<{ a: number; b: number; out: number }> = [];
 const newT: number[] = [];
 let at = 0, now = 0;
 const push = (a: number, b: number, out: number) => { if (b - a > 0.01) { segs.push({ a, b, out }); now += out; } };
+const titleCard = Math.min(track?.offset ?? 0, cues[0]?.t ?? 0); // s of polish title card, kept at 1×
+push(0, titleCard, titleCard);
+at = titleCard;
 cues.forEach((c, i) => {
   const gapEnd = c.t;
   // before the first line (page load, first scroll): up to 1 s, so the app appears without seconds of dead air
@@ -48,7 +43,12 @@ cues.forEach((c, i) => {
   push(c.t, lineEnd, lineEnd - c.t);
   at = lineEnd;
 });
-push(at, total, Math.min(total - at, 1.0));
+push(at, total - endCard, Math.min(total - endCard - at, 1.0));
+if (endCard) push(total - endCard, total, endCard);
+/** A time in <base>.mp4 → the same moment in the tightened video. */
+const toTight = (t: number) => { let o = 0; for (const s of segs) { if (t < s.b) return o + Math.max(0, t - s.a) * (s.out / (s.b - s.a)); o += s.out; } return o; };
+/** …and back: the tightened video's time → <base>.mp4. */
+const fromTight = (t: number) => { let o = 0; for (const s of segs) { if (t < o + s.out) return s.a + ((t - o) * (s.b - s.a)) / s.out; o += s.out; } return total; };
 
 const v = segs.map((s, i) => `[0:v]trim=start=${s.a.toFixed(3)}:end=${s.b.toFixed(3)},setpts=(PTS-STARTPTS)*${(s.out / (s.b - s.a)).toFixed(5)}[v${i}]`);
 const vcat = `${segs.map((_, i) => `[v${i}]`).join('')}concat=n=${segs.length}:v=1:a=0,fps=30,format=yuv420p[vid]`;
@@ -56,9 +56,14 @@ const a = cues.map((c, i) => {
   const ms = Math.round((newT[i] + LEAD) * 1000);
   return `[${i + 1}:a]atrim=start=${spans[i].from.toFixed(3)}:end=${spans[i].to.toFixed(3)},asetpts=PTS-STARTPTS,aresample=48000,adelay=${ms}|${ms}[a${i}]`;
 });
-const amix = `${cues.map((_, i) => `[a${i}]`).join('')}amix=inputs=${cues.length}:normalize=0,loudnorm=I=-16:TP=-1.5:LRA=11,apad[aud]`;
+const voice = `${cues.map((_, i) => `[a${i}]`).join('')}amix=inputs=${cues.length}:normalize=0,loudnorm=I=-16:TP=-1.5:LRA=11`;
 const out = `${base}-tight.mp4`;
-execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-i', video, ...cues.flatMap(c => ['-i', c.file]),
+// polish sound: the clicks, keys and page loads moved to their tightened times, ducked under the trimmed lines
+const sound = (track?.polish as { sound?: SoundOptions } | undefined)?.sound;
+const sfx = track && sound && renderSfx(sfxEvents(track).map(e => ({ ...e, t: toTight(e.t) })),
+  cues.map((_, i): [number, number] => [newT[i] + LEAD, newT[i] + LEAD + spans[i].to - spans[i].from]), now, `${base}-tight.sfx.wav`, sound);
+const amix = sfx ? `${voice},aresample=48000[voice];${SFX_MIX('[voice]', `[${cues.length + 1}:a]`, '[aud]')}` : `${voice},apad[aud]`;
+execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-i', video, ...cues.flatMap(c => ['-i', c.file]), ...(sfx ? ['-i', sfx] : []),
   '-filter_complex', [...v, vcat, ...a, amix].join(';'), '-map', '[vid]', '-map', '[aud]', '-t', now.toFixed(3),
   '-c:v', 'libx264', '-crf', '20', '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', out], { stdio: 'inherit' });
 
@@ -68,4 +73,9 @@ writeFileSync(out.replace(/\.mp4$/, '.srt'), cues.map((c, i) => {
   return `${i + 1}\n${srtTime(from)} --> ${srtTime(to)}\n${c.say}\n`;
 }).join('\n'));
 writeFileSync(`${base}-tight.cues.json`, JSON.stringify(cues.map((c, i) => ({ t: newT[i], caption: c.caption, say: c.say, voice: [newT[i] + LEAD, newT[i] + LEAD + spans[i].to - spans[i].from] })), null, 2));
+if (existsSync(`${base}.camera.json`)) { // the camera per tightened frame, for scripts/check.ts
+  const cam = JSON.parse(readFileSync(`${base}.camera.json`, 'utf8')) as { fps: number; frames: unknown[] };
+  const frames = Array.from({ length: Math.round(now * cam.fps) }, (_, j) => cam.frames[Math.min(cam.frames.length - 1, Math.round(fromTight(j / cam.fps) * cam.fps))]);
+  writeFileSync(`${base}-tight.camera.json`, JSON.stringify({ ...cam, offset: toTight((cam as { offset?: number }).offset ?? 0), frames }));
+}
 console.log(`${out} (${now.toFixed(1)} s, from ${total.toFixed(1)} s)`);

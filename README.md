@@ -35,6 +35,10 @@ node scripts/tighten.ts out/todomvc                               # speech timin
 
 Tour option `"colorScheme": "dark"` records the app in dark mode (default light, regardless of the OS).
 
+```bash
+node scripts/check.ts out/todomvc-tight.mp4    # pass/warn/fail table: silent gaps, loudness, camera, blank frames
+```
+
 Voices: `NARRATOR_VOICE=af_heart` (default, US), `af_bella`, `am_michael`, `bf_emma` (UK), `bm_george` (UK).
 `NARRATOR_SPEED=1.15` speeds both engines up for a brisker pace.
 `NARRATOR_ENGINE=say` uses macOS voices instead (`NARRATOR_VOICE=Samantha`, `NARRATOR_RATE=185`).
@@ -72,3 +76,34 @@ Voices: `NARRATOR_VOICE=af_heart` (default, US), `af_bella`, `am_michael`, `bf_e
 It stays over the page while the app loads, so a spoken introduction can cover the start-up time.
 
 The overlay (pointer, caption, mark, title) lives in the browser's top layer, so it also covers modal `<dialog>`s.
+
+## Polish (optional)
+
+All off by default: a tour without `"polish"` records exactly as before. Turn features on in the tour:
+
+```json
+"polish": {
+  "camera": true,
+  "sound": true,
+  "frame": { "address": "app.example.com" },
+  "cards": { "title": "Acme Board", "subtitle": "A short tour", "brand": "#3b82f6", "logo": "logo.svg", "end": "Thanks for watching" },
+  "blur": true
+}
+```
+
+`true` uses the defaults below; a missing key or `false` means off. `--polish camera,sound` on the command line turns
+on exactly those features (keeping the tour's options for them); `--polish none` turns all off.
+
+| Feature | Does | Options (default) |
+|---|---|---|
+| `camera` | Virtual camera: zooms in on each `focus` area (with padding), follows the pointer gently when nothing is marked, zooms out to the full view on page loads. Moves only between lines, eased in ahead of the action, and holds still while a line is spoken; never crops the focus area or the pointer. Records at 2× pixels, so zoomed text stays sharp; output 1080p at the viewport's aspect. Captions are drawn over the output, not zoomed. Before each line the recorder waits `lead + smoothness` after the focus moves, so the move fits in. | `maxZoom` (1.8), `padding` CSS px around the focus (40), `lead` s the move ends before the action (0.15), `smoothness` s per move (0.7), `idleZoom` with no focus (1.2). Per step: `"camera": false` shows the full view while that step runs. |
+| `sound` | Soft click per click, light ticks while typing, a gentle whoosh on page loads; synthesised offline, one shared small-room reverb, ducked under the voice; final mix ≈ -16 LUFS, limited. | `volume` dB (0), `duck` dB under speech (7) |
+| `frame` | The recording in a rounded browser window with a soft shadow on a background; 1920×1080 output; composites with the camera (it zooms inside the window). | `background` colour list → diagonal gradient, or any CSS background (`["#e9edf5", "#c3cde2"]`), `radius` px (14), `padding` px (56), `address` bar text (empty: no real URL leaks), `theme` light/dark (the tour's `colorScheme`) |
+| `cards` | Branded title card before, optional end card after the recording, cross-fading in and out. An intro caption's card (before the first `goto`) uses the same background and text colour. | `title`, `subtitle`, `duration` s (2.5); `end`: `"text"` or `{ title, subtitle, duration (3) }`; `brand` accent colour (#ff6b1a); `background` (brand-tinted dark gradient); `color` text (#fff); `logo` image path, relative to the tour; `animation` fade / scale / none (fade) |
+| `blur` | Light motion blur while the camera moves fast (sub-samples along the camera path, scaled to its speed); none on still holds, never on captions. Needs `camera`. | `strength` (1) |
+
+With polish, record writes `<out>.raw.mp4` (sharp intermediate), `<out>.track.json` (pointer, focus, clicks, keys,
+lines, page loads per moment) and `<out>.camera.json` (the camera per frame, for `check.ts`), then renders `<out>.mp4`
+from them; `node scripts/polish.ts <out>` re-renders it after changing options (then re-run `narrate.ts` and
+`tighten.ts`). `tighten.ts` keeps the end card at 1×, re-times the sounds and writes `<out>-tight.camera.json`.
+Rendering takes about 2–3× the video's length. Cue times in `.cues.json` include the title card.

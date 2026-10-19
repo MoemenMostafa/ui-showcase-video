@@ -18,6 +18,7 @@ A tour file (JSON steps) drives Chrome; a drawn pointer glides to each target an
    - `ffmpeg -i <final.mp4> -af silencedetect=noise=-40dB:d=0.7 -vn -f null -` lists no long gaps (speech timing: check the `-tight` file; only the fade after the last line may exceed it);
    - narrator printed no `cue N … needs X s` warning (else shorten that line or lengthen its pause, re-run narrate);
    - `ffmpeg -i <narrated.mp4> -af volumedetect -vn -f null -` → mean volume about −16…−22 dB (not silent);
+   - `node scripts/check.ts <final.mp4>` prints these checks plus camera motion, focus-in-frame and blank frames as a pass/warn/fail table;
    - for EVERY cue extract two frames — ~1 s after its `t` and just before its line ends (`ffmpeg -ss <t> -i … -frames:v 1 x.png`; use the `-tight.cues.json` times for a tightened file) — and look at both: caption matches what's on screen, focus mark and pointer on the thing described, and the screen did not change between the two. Report a cue table (t, caption, what the frame shows, OK) and re-record until every row is OK; sampling a few cues misses drift.
 
 ## Quick reference
@@ -30,6 +31,12 @@ A tour file (JSON steps) drives Chrome; a drawn pointer glides to each target an
 | Cycle a toggle to a state | `clickUntil` with `attr` + `equals` |
 | Target may be absent | `"optional": true` on `click` |
 | Area below the fold | just `focus` (or click) it — scrolled to the middle automatically |
+| Zoom in on what's talked about | `"polish": { "camera": true }` (`maxZoom` 1.8, `padding` 40, `lead` 0.15, `smoothness` 0.7, `idleZoom` 1.2; `"camera": false` on a step = full view) |
+| UI sounds under the voice | `"polish": { "sound": true }` (`volume` 0 dB, `duck` 7 dB) |
+| Browser-window look | `"polish": { "frame": true }` (`background`, `radius` 14, `padding` 56, `address` "" — never a real URL) |
+| Branded title / end card | `"polish": { "cards": { "title", "subtitle", "brand", "logo", "end" } }` (title 2.5 s, end 3 s, `animation` fade) |
+| Motion blur on fast moves | `"polish": { "blur": true }` (needs camera) |
+| Polish without editing the tour | `--polish camera,sound` (exactly these; `none` = off). All options: README |
 
 ## Common mistakes
 | Symptom | Cause / fix |
@@ -45,3 +52,4 @@ A tour file (JSON steps) drives Chrome; a drawn pointer glides to each target an
 | Silence check fails even with no pauses | Kokoro pads each clip (~0.8 s together). Check the `-tight` output instead. |
 | Spoken count is wrong a day later | Live numbers in the narration. Say only fixed facts; let the screen show the counts. |
 | Video longer than asked | Too many words. Cut lines; captions can stay longer than speech. |
+| Camera drifts or crops | Give every caption a `focus`; re-render with other options via `node scripts/polish.ts <out>` (no re-recording). |
